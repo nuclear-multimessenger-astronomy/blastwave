@@ -37,8 +37,8 @@ jobs:
         run: |
           pip install maturin numpy pytest
 
-      - name: Build PyO3 extension
-        run: cd rust && maturin develop --release
+      - name: Build and install PyO3 extension
+        run: pip install ./rust
 
       - name: Install jetsimpy-rs Python package
         run: pip install .
