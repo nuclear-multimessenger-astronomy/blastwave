@@ -96,3 +96,110 @@ impl Tool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool() -> Tool {
+        Tool::new(0.0, 1.0, 1e-6, 1)
+    }
+
+    #[test]
+    fn test_solve_density_ism_only() {
+        let t = Tool::new(0.0, 5.0, 1e-6, 1);
+        assert!((t.solve_density(1e18) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_density_wind_only() {
+        let t = Tool::new(1.0, 0.0, 1e-6, 1);
+        // At r = 1e17: nwind / (1e17/1e17)^2 = nwind
+        assert!((t.solve_density(1e17) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_density_combined() {
+        let t = Tool::new(2.0, 3.0, 1e-6, 1);
+        // At r = 1e17: 2/(1)^2 + 3 = 5
+        assert!((t.solve_density(1e17) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_s_cal_level_0() {
+        let t = Tool::new(0.0, 1.0, 1e-6, 0);
+        assert!((t.solve_s(1e18, 100.0) - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_s_cal_level_1_ism() {
+        // With nwind=0, k = 0, so s = 0.52935729
+        let t = Tool::new(0.0, 1.0, 1e-6, 1);
+        assert!((t.solve_s(1e18, 100.0) - 0.52935729).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_minmod_same_sign() {
+        let t = tool();
+        assert!((t.minmod(3.0, 5.0) - 3.0).abs() < 1e-10);
+        assert!((t.minmod(-5.0, -2.0) - (-2.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_minmod_opposite_sign() {
+        let t = tool();
+        assert!((t.minmod(3.0, -5.0)).abs() < 1e-10);
+        assert!((t.minmod(-3.0, 5.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_find_index() {
+        let t = tool();
+        let arr = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(t.find_index(&arr, 2.5), (1, 2));
+        assert_eq!(t.find_index(&arr, 4.5), (3, 4));
+        assert_eq!(t.find_index(&arr, 1.5), (0, 1));
+    }
+
+    #[test]
+    fn test_linear_interpolation() {
+        let t = tool();
+        // Midpoint between (0, 0) and (10, 20) at x=5 should give 10
+        assert!((t.linear(5.0, 0.0, 10.0, 0.0, 20.0) - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_linear_interpolation_at_endpoints() {
+        let t = tool();
+        assert!((t.linear(0.0, 0.0, 10.0, 3.0, 7.0) - 3.0).abs() < 1e-10);
+        assert!((t.linear(10.0, 0.0, 10.0, 3.0, 7.0) - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_linear_degenerate() {
+        let t = tool();
+        // x1 == x2: should return y1
+        assert!((t.linear(5.0, 5.0, 5.0, 3.0, 7.0) - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_solve_beta_gamma_sq() {
+        // For a relativistic case, verify the root satisfies energy conservation
+        let t = Tool::new(0.0, 1.0, 1e-6, 1);
+        let msw_eb = 0.01;
+        let mej_eb = 0.001;
+        let r = 1e18;
+        let u_sq = t.solve_beta_gamma_sq(msw_eb, mej_eb, r).unwrap();
+        assert!(u_sq > 0.0);
+        assert!(u_sq.is_finite());
+
+        // Verify the root satisfies the equation f(u_sq) ~ 0
+        let beta_sq = u_sq / (u_sq + 1.0);
+        let gamma = (u_sq + 1.0).sqrt();
+        let s = t.solve_s(r, u_sq);
+        let residual = s * gamma * gamma * (1.0 + beta_sq * beta_sq / 3.0) * msw_eb
+            + gamma * ((1.0 - s) * msw_eb + mej_eb)
+            - 1.0;
+        assert!(residual.abs() < 1e-5);
+    }
+}

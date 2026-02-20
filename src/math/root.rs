@@ -88,3 +88,43 @@ pub fn brentq<F: FnMut(f64) -> f64>(
         max_iter
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_linear_root() {
+        // f(x) = x - 3, root at x = 3
+        let root = brentq(&mut |x| x - 3.0, 0.0, 10.0, 1e-12, 1e-12, 100).unwrap();
+        assert!((root - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_quadratic_root() {
+        // f(x) = x^2 - 4, root at x = 2 (in [0, 10])
+        let root = brentq(&mut |x| x * x - 4.0, 0.0, 10.0, 1e-12, 1e-12, 100).unwrap();
+        assert!((root - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trig_root() {
+        // f(x) = sin(x), root at x = pi (in [2, 4])
+        let root = brentq(&mut |x| x.sin(), 2.0, 4.0, 1e-12, 1e-12, 100).unwrap();
+        assert!((root - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_exact_root_at_boundary() {
+        // f(x) = x, root at x = 0 which is xa
+        let root = brentq(&mut |x| x, 0.0, 1.0, 1e-12, 1e-12, 100).unwrap();
+        assert!(root.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_same_sign_error() {
+        // f(a) and f(b) same sign should error
+        let result = brentq(&mut |x| x * x + 1.0, 0.0, 10.0, 1e-12, 1e-12, 100);
+        assert!(result.is_err());
+    }
+}

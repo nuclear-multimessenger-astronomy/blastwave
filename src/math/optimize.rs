@@ -153,3 +153,50 @@ pub fn minimization<F: FnMut(f64) -> f64>(f: &mut F, x_ini: &[f64], atol: f64, m
         golden_section(f, x_ini[argmin - 1], x_ini[argmin + 1], atol, max_iter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_golden_section_quadratic() {
+        // f(x) = (x - 3)^2, minimum at x = 3
+        let result = golden_section(&mut |x| (x - 3.0) * (x - 3.0), 0.0, 10.0, 1e-10, 100);
+        assert!((result - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_golden_section_cosine() {
+        // f(x) = -cos(x), minimum at x = 0 (in [-1, 1])
+        let result = golden_section(&mut |x| -x.cos(), -1.0, 1.0, 1e-10, 100);
+        assert!(result.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_minimization_range_linear() {
+        // f(x) = (x - 5)^2, minimum at x = 5
+        let result = minimization_range(
+            &mut |x| (x - 5.0) * (x - 5.0),
+            0.0, 10.0, 20, 1e-10, "linear", 100,
+        ).unwrap();
+        assert!((result - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_minimization_range_log() {
+        // f(x) = (x - 5)^2, minimum at x = 5
+        let result = minimization_range(
+            &mut |x| (x - 5.0) * (x - 5.0),
+            0.0, 10.0, 20, 1e-10, "log", 100,
+        ).unwrap();
+        assert!((result - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_minimization_with_samples() {
+        // f(x) = (x - 2)^2
+        let x_ini: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let result = minimization(&mut |x| (x - 2.0) * (x - 2.0), &x_ini, 1e-10, 100);
+        assert!((result - 2.0).abs() < 1e-6);
+    }
+}

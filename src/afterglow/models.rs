@@ -134,3 +134,103 @@ pub fn get_avg_model(name: &str) -> Option<RadiationModel> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_radiation_model_sync() {
+        assert!(get_radiation_model("sync").is_some());
+    }
+
+    #[test]
+    fn test_get_radiation_model_sync_dnp() {
+        assert!(get_radiation_model("sync_dnp").is_some());
+    }
+
+    #[test]
+    fn test_get_radiation_model_invalid() {
+        assert!(get_radiation_model("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_get_avg_model_offset() {
+        assert!(get_avg_model("offset").is_some());
+    }
+
+    #[test]
+    fn test_get_avg_model_sigma_x() {
+        assert!(get_avg_model("sigma_x").is_some());
+    }
+
+    #[test]
+    fn test_get_avg_model_sigma_y() {
+        assert!(get_avg_model("sigma_y").is_some());
+    }
+
+    #[test]
+    fn test_get_avg_model_invalid() {
+        assert!(get_avg_model("nonexistent").is_none());
+    }
+
+    fn make_params() -> Dict {
+        let mut p = Dict::new();
+        p.insert("eps_e".into(), 0.1);
+        p.insert("eps_b".into(), 0.01);
+        p.insert("p".into(), 2.17);
+        p.insert("theta_v".into(), 0.0);
+        p
+    }
+
+    fn make_blast() -> Blast {
+        Blast {
+            t: 1e5,
+            theta: 0.05,
+            phi: 0.0,
+            r: 1e17,
+            beta: 0.99,
+            gamma: 10.0,
+            beta_th: 0.0,
+            beta_r: 0.99,
+            beta_f: 0.99,
+            gamma_f: 10.0,
+            s: 0.5,
+            doppler: 5.0,
+            cos_theta_beta: 0.95,
+            n_blast: 1e3,
+            e_density: 1e-2,
+            pressure: 1e-3,
+            n_ambient: 1.0,
+            dr: 1e15,
+        }
+    }
+
+    #[test]
+    fn test_sync_positive_emissivity() {
+        let p = make_params();
+        let blast = make_blast();
+        let result = sync(1e18, &p, &blast);
+        assert!(result > 0.0, "Synchrotron emissivity should be positive");
+        assert!(result.is_finite());
+    }
+
+    #[test]
+    fn test_sync_dnp_positive_emissivity() {
+        let p = make_params();
+        let blast = make_blast();
+        let result = sync_dnp(1e18, &p, &blast);
+        assert!(result > 0.0, "sync_dnp emissivity should be positive");
+        assert!(result.is_finite());
+    }
+
+    #[test]
+    fn test_sync_decreases_with_frequency() {
+        // In the power-law regime, higher frequency => lower emissivity
+        let p = make_params();
+        let blast = make_blast();
+        let low = sync(1e14, &p, &blast);
+        let high = sync(1e20, &p, &blast);
+        assert!(low > high, "Emissivity should generally decrease at high frequencies");
+    }
+}

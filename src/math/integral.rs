@@ -155,3 +155,59 @@ pub fn adaptive_2d<F: FnMut(f64, f64) -> f64>(
     };
     adaptive_1d(&mut g, yini, xtol, rtol, max_iter, force_return)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_integrate_constant() {
+        // integral of f(x) = 1 from 0 to 5 = 5
+        let xini = vec![0.0, 5.0];
+        let result = adaptive_1d(&mut |_x| 1.0, &xini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 5.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_integrate_linear() {
+        // integral of f(x) = x from 0 to 4 = 8
+        let xini = vec![0.0, 4.0];
+        let result = adaptive_1d(&mut |x| x, &xini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 8.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_integrate_quadratic() {
+        // integral of f(x) = x^2 from 0 to 3 = 9
+        let xini = vec![0.0, 3.0];
+        let result = adaptive_1d(&mut |x| x * x, &xini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 9.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_integrate_sin() {
+        // integral of sin(x) from 0 to pi = 2
+        let pi = std::f64::consts::PI;
+        let xini = vec![0.0, pi / 2.0, pi];
+        let result = adaptive_1d(&mut |x| x.sin(), &xini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 2.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_integrate_2d() {
+        // integral of f(x,y) = 1 over [0,2] x [0,3] = 6
+        let xini = vec![0.0, 2.0];
+        let yini = vec![0.0, 3.0];
+        let result = adaptive_2d(&mut |_x, _y| 1.0, &xini, &yini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 6.0).abs() < 1e-8);
+    }
+
+    #[test]
+    fn test_integrate_2d_product() {
+        // integral of f(x,y) = x*y over [0,1] x [0,1] = 0.25
+        let xini = vec![0.0, 1.0];
+        let yini = vec![0.0, 1.0];
+        let result = adaptive_2d(&mut |x, y| x * y, &xini, &yini, 1e-10, 1e-10, 50, true).unwrap();
+        assert!((result - 0.25).abs() < 1e-8);
+    }
+}
