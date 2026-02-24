@@ -55,7 +55,7 @@ pub fn adaptive_1d<F: FnMut(f64) -> f64>(
     }
     let h_tot = xini[xsize - 1] - xini[0];
 
-    for _ in 0..max_iter {
+    for iteration in 0..max_iter {
         let mut any_refined = false;
         let intervals_size = intervals.len();
         let mut integral_new = integral_tot;
@@ -66,10 +66,16 @@ pub fn adaptive_1d<F: FnMut(f64) -> f64>(
 
         for i in 0..intervals_size {
             let itv = &intervals[i];
-            let need_refine = (itv.lorder - itv.horder).abs()
+            // Standard convergence check: refine if Simpson and Boole disagree
+            let need_refine_convergence = (itv.lorder - itv.horder).abs()
                 > xtol * itv.h / h_tot + rtol * itv.horder.abs()
                 && (itv.lorder - itv.horder).abs() * intervals_size as f64
                     > xtol + rtol * integral_tot.abs();
+            // Guard: on the first iteration, also refine any all-zero interval
+            // whose width is non-trivial, to avoid missing narrow peaks
+            let all_zero = itv.y.iter().all(|&v| v == 0.0);
+            let need_refine = need_refine_convergence
+                || (iteration == 0 && all_zero && itv.h > h_tot * 1e-6);
 
             if need_refine {
                 integral_new -= itv.horder;

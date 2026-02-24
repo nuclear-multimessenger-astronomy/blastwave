@@ -6,6 +6,97 @@ use numpy::{PyArray1, PyArray3, PyArrayMethods, PyReadonlyArray1};
 use std::collections::HashMap;
 use rayon::prelude::*;
 
+// ---------------------------------------------------------------------------
+// Post-processing: interpolate isolated zero-valued luminosity points
+// ---------------------------------------------------------------------------
+
+/// Log-log interpolate zero runs in a time-sorted, single-frequency group.
+/// Zeros bounded on both sides by positive values are filled via log-log
+/// interpolation (natural for power-law lightcurves).  Zeros at the
+/// boundaries (leading/trailing) are left untouched.
+fn interpolate_sorted_group(results: &mut [f64], times: &[f64]) {
+    let n = results.len();
+    let mut i = 0;
+    while i < n {
+        if results[i] == 0.0 {
+            let start = i;
+            while i < n && results[i] == 0.0 {
+                i += 1;
+            }
+            let end = i; // exclusive
+
+            let has_left = start > 0 && results[start - 1] > 0.0;
+            let has_right = end < n && results[end] > 0.0;
+
+            if has_left && has_right {
+                let li = start - 1;
+                let ri = end;
+                let log_lum_l = results[li].ln();
+                let log_lum_r = results[ri].ln();
+                let log_t_l = times[li].ln();
+                let log_t_r = times[ri].ln();
+                let dt = log_t_r - log_t_l;
+
+                if dt > 0.0 {
+                    for j in start..end {
+                        let frac = (times[j].ln() - log_t_l) / dt;
+                        results[j] = (log_lum_l + frac * (log_lum_r - log_lum_l)).exp();
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Interpolate zero-valued luminosity entries that are surrounded by
+/// non-zero values at the same observing frequency.  Works for the common
+/// single-frequency case (fast path) as well as mixed-frequency arrays.
+fn interpolate_zero_luminosities(results: &mut [f64], t_s: &[f64], nu_s: &[f64]) {
+    let n = results.len();
+    if n < 3 {
+        return;
+    }
+
+    // Fast path: all entries at the same frequency
+    let all_same_nu = nu_s.iter().all(|&v| v == nu_s[0]);
+
+    if all_same_nu {
+        let sorted = t_s.windows(2).all(|w| w[0] <= w[1]);
+        if sorted {
+            interpolate_sorted_group(results, t_s);
+        } else {
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&a, &b| t_s[a].partial_cmp(&t_s[b]).unwrap());
+            let mut sorted_res: Vec<f64> = order.iter().map(|&i| results[i]).collect();
+            let sorted_t: Vec<f64> = order.iter().map(|&i| t_s[i]).collect();
+            interpolate_sorted_group(&mut sorted_res, &sorted_t);
+            for (j, &idx) in order.iter().enumerate() {
+                results[idx] = sorted_res[j];
+            }
+        }
+    } else {
+        // Multi-frequency: group by nu (using bit-exact equality), process each
+        let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            groups.entry(nu_s[i].to_bits()).or_default().push(i);
+        }
+        for (_, mut indices) in groups {
+            if indices.len() < 3 {
+                continue;
+            }
+            indices.sort_by(|&a, &b| t_s[a].partial_cmp(&t_s[b]).unwrap());
+            let mut group_res: Vec<f64> = indices.iter().map(|&i| results[i]).collect();
+            let group_t: Vec<f64> = indices.iter().map(|&i| t_s[i]).collect();
+            interpolate_sorted_group(&mut group_res, &group_t);
+            for (j, &idx) in indices.iter().enumerate() {
+                results[idx] = group_res[j];
+            }
+        }
+    }
+}
+
 use jetsimpy_rs::constants::*;
 use jetsimpy_rs::hydro::config::JetConfig;
 use jetsimpy_rs::hydro::sim_box::SimBox;
@@ -374,7 +465,7 @@ impl PyJet {
             let (nu_s, _) = extract_broadcast(&nu, py, Some(n))?;
             let (rtol_s, _) = extract_broadcast(&rtol, py, Some(n))?;
 
-            let results: Vec<f64> = py.allow_threads(|| {
+            let mut results: Vec<f64> = py.allow_threads(|| {
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
@@ -386,6 +477,10 @@ impl PyJet {
                     })
                     .collect()
             });
+
+            // Fill isolated zero-valued points via log-log interpolation
+            interpolate_zero_luminosities(&mut results, &t_s, &nu_s);
+
             Ok(PyArray1::from_vec(py, results).into_any().unbind())
         } else {
             let t_val: f64 = tobs.extract(py)?;

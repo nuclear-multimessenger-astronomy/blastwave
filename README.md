@@ -80,6 +80,37 @@ fd_gaussian = jetsimpy_rs.FluxDensity_gaussian(tsecond, nu, P)
 fd_powerlaw = jetsimpy_rs.FluxDensity_powerlaw(tsecond, nu, P)
 ```
 
+## Zero-value Interpolation in Luminosity Computation
+
+For extreme physical parameters (e.g. very high isotropic energy E0 ~ 1e57 erg or very low ISM density n0 ~ 1e-5 cm^-3), the EATS solver can fail to find a solution at certain observation times because the required source-frame time exceeds the PDE evolution maximum (`tmax`). When this happens, `luminosity()` returns 0.0 for those time points, producing isolated gaps in an otherwise smooth lightcurve.
+
+The original C++ jetsimpy raises an error and aborts entirely in these cases. jetsimpy-rs instead returns 0.0 for the affected points and continues, but these spurious zeros contaminate downstream applications (e.g. surrogate model training data where `log10(flux)` maps to -300).
+
+### How it works
+
+After the parallel luminosity computation in `calculateLuminosity` (`rust/src/lib.rs`), a post-processing step identifies zero-valued entries that are bounded on both sides by positive values at the same observing frequency. These interior zeros are filled using **log-log interpolation** (linear in ln(luminosity) vs ln(time)), which is the natural interpolation scheme for power-law lightcurves.
+
+The algorithm:
+
+1. **Groups results by frequency** — uses bit-exact floating-point equality, with a fast path for the common single-frequency case.
+2. **Sorts by time** within each group (skipped if already sorted).
+3. **Scans for zero runs** — for each contiguous block of zeros, checks for positive neighbors on both sides.
+4. **Interpolates** — fills the gap with `exp(lerp(ln(L_left), ln(L_right), frac))` where `frac` is computed in log-time space.
+
+Boundary zeros (leading or trailing, where there is no neighbor on one side) are left untouched, since these typically represent genuine physical boundaries (observation times before the jet becomes visible or after the PDE domain ends).
+
+### Impact
+
+On worst-case parameters from the GRB training set:
+- **Before**: up to 35/250 time points returned zero luminosity, producing -300 floors in log-space training data.
+- **After**: 0 interior zeros remain. Only boundary points (e.g. the very last time exceeding `tmax`) may still be zero.
+
+The interpolated values blend smoothly with computed values (max log10 jump ~ 0.5 dex between consecutive points on a 250-point log-spaced grid).
+
+### Adaptive Integration Refinement
+
+A complementary fix in the adaptive quadrature (`src/math/integral.rs`) forces refinement of all-zero intervals on the first iteration. This prevents the integrator from skipping regions where all 5 sample points happen to miss a narrow emission beam, which could otherwise cause the 2D EATS integral to return zero even when the physical flux is nonzero.
+
 ## References
 
 - Wang, H., Bhattacharya, M., Gill, R., & Giannios, D. (2024). "jetsimpy: A Highly Efficient Hydrodynamic Code for Gamma-Ray Burst Afterglow." *The Astrophysical Journal Supplement Series*, 273(1), 17. [arXiv:2404.11365](https://arxiv.org/abs/2404.11365)

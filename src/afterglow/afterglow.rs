@@ -175,13 +175,28 @@ impl Afterglow {
             self.dl_domega(nu_z, &blast)
         };
 
-        let cos_theta_samples = vec![
-            -1.0,
-            beaming_angle.cos(),
-            (beaming_angle / 2.0).cos(),
-            1.0,
-        ];
-        let phi_samples = vec![0.0, PI];
+        // Build initial sample grid dense enough to capture the narrow emission beam.
+        // The beaming angle 1/gamma can be very small, so we place samples both
+        // around the beam and uniformly across the domain to avoid the adaptive
+        // integrator seeing all-zeros and skipping refinement.
+        let mut cos_theta_samples = vec![-1.0];
+        // Uniform samples to cover the full domain
+        let n_uniform = 8;
+        for i in 1..n_uniform {
+            cos_theta_samples.push(-1.0 + 2.0 * i as f64 / n_uniform as f64);
+        }
+        // Targeted samples around the beaming cone
+        let ba = beaming_angle;
+        for &frac in &[0.25, 0.5, 1.0, 2.0] {
+            let val = (ba * frac).cos();
+            cos_theta_samples.push(val);
+        }
+        cos_theta_samples.push(1.0);
+        // Sort and deduplicate (required by adaptive_1d)
+        cos_theta_samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        cos_theta_samples.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
+
+        let phi_samples = vec![0.0, PI / 2.0, PI];
 
         let luminosity = adaptive_2d(
             &mut f,
