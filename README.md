@@ -205,10 +205,6 @@ The Thomson Y parameter accounts for inverse Compton losses on the cooling break
 
 The factor π/4 ≈ 0.785 comes from averaging over the pitch angle distribution (isotropic electrons in a tangled magnetic field), and 0.92 is the spectral peak correction factor from Wijers & Galama (1999). The combined factor is ~0.72.
 
-#### Why these cannot be applied independently
-
-These three differences are internally balanced within each code's framework. In VegasAfterglow, the lower Γ_th increases ν_m and B, which partially compensates for the IC cooling reduction and normalization reduction. Applying only fixes 2+3 to jetsimpy-rs without fix 1 overcorrects the flux downward, increasing the offset from ~0.8 to ~1.3 dex. To match VegasAfterglow's flux levels, all three must be adopted together as a self-consistent package — or none at all.
-
 ### Performance Comparison
 
 Benchmarks for a tophat jet, on-axis (θ_v=0), X-ray (1 GHz), 100 time points. Measured on a single core (Intel Xeon, HPC node).
