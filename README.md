@@ -29,6 +29,7 @@ The following features have been added beyond the original jetsimpy:
 - **Reverse shock**: Forward + reverse shock dynamics and emission, with separate `FluxDensity_forward()` and `FluxDensity_reverse()` diagnostics
 - **Zero-value interpolation**: Log-log interpolation of spurious zero-luminosity points at extreme parameters (original jetsimpy aborts in these cases)
 - **Adaptive integration refinement**: Forces refinement of all-zero EATS quadrature intervals to prevent missed narrow emission beams
+- **Forward-mapping flux computation** (`flux_method="forward"`): VegasAfterglow-style pre-computed radiation grid with binary search + interpolation, eliminating EATS adaptive quadrature overhead for on-axis viewing angles
 - **EATS quadrature optimizations**: On-axis peak-finding skip (peak is always at θ=0 by symmetry), off-axis peak subsampling (20 points instead of all cells), and pre-allocated integration buffers
 - **Primitive-variable no-spread solver**: No-spread mode now uses per-cell primitive-variable RK45 (shared with ODE mode), eliminating conservative-to-primitive root-finding and heap allocations per time step
 
@@ -141,6 +142,65 @@ The ODE spreading mode implements the lateral spreading model from Wang et al. (
 
 ODE and PDE modes agree within ~0.1 dex for tophat jets and ~0.13 dex for structured (Gaussian) jets across all frequencies and times.
 
+## Forward-Mapping Flux Method
+
+For on-axis viewing angles (θ_v ≈ 0), jetsimpy-rs supports a forward-mapping flux computation method that replaces the default EATS adaptive quadrature with a pre-computed radiation grid. This is selected via `flux_method="forward"`.
+
+### How it works
+
+Instead of inverse-mapping (root-finding per observation point to map observer time back to source-frame time), forward-mapping:
+
+1. **Pre-computes** observer-frame times and radiation at each hydro grid point (θ, t_src) after the hydro solve
+2. **Queries** via binary search + log-linear interpolation for each desired observation time
+
+For each theta cell j and source time step k:
+- `t_obs[j][k] = t_src[k] - r[j][k] * cos(θ_j) / c`
+- `dL/dΩ[j][k] = I(ν_src) * r² * D³` (radiation intensity times geometric and Doppler factors)
+
+Total luminosity: `L = 2π Σ_j dL/dΩ_j(t_obs) × [cos(θ_{j-1/2}) - cos(θ_{j+1/2})]`
+
+### Usage
+
+```python
+# Forward-mapping (on-axis only, falls back to EATS for off-axis)
+fd = jetsimpy_rs.FluxDensity_tophat(t, nu, P, flux_method="forward")
+
+# Or via the Jet class directly
+jet = jetsimpy_rs.Jet(profiles, nwind, nism)
+fd = jet.FluxDensity(t, nu, P, flux_method="forward")
+
+# Off-axis: flux_method="forward" silently falls back to EATS
+P_offaxis = {**P, "theta_v": 0.3}
+fd = jetsimpy_rs.FluxDensity_tophat(t, nu, P_offaxis, flux_method="forward")  # uses EATS
+```
+
+### Optimizations
+
+- **Cell skipping**: Cells with negligible energy (peak β·γ² < 10⁻⁶ × max across all time steps) are excluded from pre-computation
+- **Time-grid subsampling**: When the hydro output exceeds 300 time steps (PDE mode produces ~1000), the time grid is subsampled to limit pre-computation cost
+
+### Accuracy
+
+Forward-mapping agrees with EATS to within:
+- **0.002 dex** for PDE and no-spread modes
+- **0.04 dex** for no-spread mode
+- **0.097 dex** for ODE mode (due to coarser hydro time grid)
+
+Verified across tophat (0.002 dex), Gaussian (0.002 dex), and power-law (0.004 dex) jet profiles.
+
+### Performance
+
+At 17 cells (tophat, on-axis, X-ray, 100 time points):
+
+| Method | Total | Hydro | Flux | vs VegasAfterglow |
+|--------|-------|-------|------|-------------------|
+| no-spread + forward | 2.4ms | 2.3ms | 0.1ms | 1.6× |
+| no-spread + EATS | 6.6ms | 2.3ms | 4.8ms | 4.4× |
+| ODE + forward | 4.1ms | 4.2ms | 0.1ms | 2.7× |
+| ODE + EATS | 8.9ms | 3.5ms | 3.8ms | 5.9× |
+
+Forward-mapping reduces flux computation from milliseconds to ~0.1ms, making the remaining performance gap vs VegasAfterglow (~1.5ms) entirely hydro solve overhead.
+
 ## Zero-value Interpolation in Luminosity Computation
 
 For extreme physical parameters (e.g. very high isotropic energy E0 ~ 1e57 erg or very low ISM density n0 ~ 1e-5 cm^-3), the EATS solver can fail to find a solution at certain observation times because the required source-frame time exceeds the PDE evolution maximum (`tmax`). When this happens, `luminosity()` returns 0.0 for those time points, producing isolated gaps in an otherwise smooth lightcurve.
@@ -209,18 +269,27 @@ The factor π/4 ≈ 0.785 comes from averaging over the pitch angle distribution
 
 ### Performance Comparison
 
-Benchmarks for a tophat jet, on-axis (θ_v=0), X-ray (1 GHz), 100 time points. Total time includes both the hydrodynamic solve and flux computation. Measured on a single core (Intel Xeon, HPC node).
+Benchmarks for a tophat jet, on-axis (θ_v=0), X-ray (10¹⁸ Hz), 100 time points. Total time includes both the hydrodynamic solve and flux computation. Measured on a single core (Intel Xeon, HPC node).
+
+#### Default (EATS flux method)
 
 | Cells | PDE | ODE | No-spread | VegasAfterglow |
 |-------|-----|-----|-----------|----------------|
-| 17 | 0.005s | 0.006s | 0.004s | 0.0015s |
-| 33 | 0.008s | 0.009s | 0.007s | — |
-| 129 | 0.099s | 0.029s | 0.018s | — |
-| 257 | 0.396s | 0.056s | 0.035s | — |
+| 17 | 0.004s | 0.005s | 0.004s | 0.0015s |
+| 33 | 0.008s | 0.009s | 0.006s | — |
+| 129 | 0.099s | 0.028s | 0.018s | — |
+| 257 | 0.398s | 0.054s | 0.034s | — |
+
+#### With forward-mapping (`flux_method="forward"`)
+
+| Cells | PDE | ODE | No-spread | VegasAfterglow |
+|-------|-----|-----|-----------|----------------|
+| 17 | 0.004s | 0.004s | 0.002s | 0.0015s |
+| 129 | 0.096s | 0.020s | 0.010s | — |
+
+Forward-mapping eliminates flux computation as a bottleneck (~0.1ms vs ~1.5–5ms for EATS), bringing 17-cell no-spread to within 1.6× of VegasAfterglow. The remaining gap is hydro solve overhead.
 
 **Scaling**: PDE mode scales as O(n_θ²) due to CFL-limited time stepping; ODE and no-spread modes scale approximately linearly with cell count.
-
-**Architecture difference**: VegasAfterglow uses a forward-mapping approach — it pre-computes radiation on a 3D grid (phi × theta × time), then evaluates flux via interpolation and summation. jetsimpy-rs uses inverse-mapping EATS adaptive quadrature, evaluating the radiation model at each quadrature point. EATS optimizations (on-axis peak-finding skip, off-axis subsampling) have reduced the flux computation time from ~6ms to ~1.4ms for 17-cell on-axis, closing most of the gap with VegasAfterglow's ~1.5ms. The remaining ~3× total-time gap at 17 cells is dominated by the hydrodynamic solve overhead.
 
 **ODE vs PDE crossover**: ODE spreading becomes faster than PDE at ~33–65 cells, with physics accuracy within ~0.1 dex of PDE for tophat jets and ~0.13 dex for structured (Gaussian) jets.
 
