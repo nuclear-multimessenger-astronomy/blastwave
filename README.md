@@ -140,7 +140,7 @@ flux = blastwave.FluxDensity_tophat(t, nu, P, ebl=True)
 - Wang, Y., Zhang, B., & Huang, B. (2025). "VegasAfterglow: A Broad-Spectrum Gamma-Ray Burst Afterglow Modeling Package." *ApJ*. [arXiv:2507.10829](https://arxiv.org/abs/2507.10829) | [GitHub](https://github.com/YihanWangAstro/VegasAfterglow)
 - Nedora, V. et al. "PyBlastAfterglowMag." [GitHub](https://github.com/vsevolodnedora/PyBlastAfterglowMag)
 - Margalit, B. & Quataert, E. (2021). "Thermal Electrons in Mildly-relativistic Synchrotron Blast-waves." *ApJ*. [arXiv:2111.00012](https://arxiv.org/abs/2111.00012)
-- Ferguson, R. & Margalit, B. (2025). "Numerical Modeling of Relativistic Effects in Synchrotron-Emitting Shocks." [arXiv:2509.16313](https://arxiv.org/abs/2509.16313)
+- Ferguson, R. & Margalit, B. (2025). "Numerical Modeling of Relativistic Effects in Synchrotron-Emitting Shocks." [arXiv:2509.16313](https://arxiv.org/abs/2509.16313) | [GitHub](https://github.com/RossFerguson1/synchrotron_shock_model)
 - Sari, R., Piran, T., & Narayan, R. (1998). "Spectra and Light Curves of Gamma-Ray Burst Afterglows." *ApJL*, 497(1), L17.
 - Wijers, R. A. M. J., & Galama, T. J. (1999). "Physical Parameters of GRB 970508 and GRB 971214 from Their Afterglow Synchrotron Emission." *ApJ*, 523(1), 177.
 - Franceschini, A. & Rodighiero, G. (2018). "The extragalactic background light revisited and the cosmic photon-photon opacity." *A&A*, 614, C1.

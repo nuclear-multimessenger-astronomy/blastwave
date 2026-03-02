@@ -5,12 +5,12 @@ Radio data from Rhodes+2025 (arXiv:2506.13618, ApJ accepted).
 Redshift: z = 1.193, Discovery: 2022 Feb 11 (MJD 59621.4458).
 Cosmology: H0 = 70 km/s/Mpc, Omega_M = 0.3.
 
-The paper's best-fit model is a spherical outflow with thermal + non-thermal
-electrons (MQ21/FM25 formalism). This script compares non-thermal only
-(sync_ssa) vs thermal+non-thermal (sync_thermal) to show the effect of
-thermal electrons on the high-frequency spectral index.
+This script models the multi-frequency radio afterglow with a spherical
+blast wave in a wind-like medium (n ∝ r^{-k}, k=1.8) using the sync_ssa
+radiation model.
 """
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -18,6 +18,17 @@ from scipy.integrate import quad
 import sys
 sys.path.insert(0, "..")
 from blastwave import FluxDensity_spherical
+
+# ---------- Plot style ----------
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.labelsize': 16,
+    'axes.titlesize': 16,
+    'xtick.labelsize': 13,
+    'ytick.labelsize': 13,
+    'legend.fontsize': 11,
+    'figure.titlesize': 17,
+})
 
 # ---------- Constants ----------
 DAY = 86400.0  # seconds per day
@@ -45,8 +56,6 @@ print(f"AT2022cmc: z = {z}, d_L = {d_L:.0f} Mpc")
 
 # ---------- Radio data from Rhodes+2025, Table 1 ----------
 # Format: (date_str, freq_GHz, flux_mJy, err_mJy)
-# Upper limits (prefixed with <) are excluded.
-# For same-day duplicate AMI-LA observations, we include both.
 
 raw_data = [
     # e-MERLIN 5 GHz
@@ -185,108 +194,74 @@ for key in freq_groups:
     freq_groups[key] = np.array(freq_groups[key])
 
 # ---------- Model parameters ----------
-# Paper best-fit spherical model:
-#   (Gamma*beta)_sh = 1.795 (t/45d)^{-0.288}
-#   n = 191 (R/R_45)^{-1.795}, R_45 = 9.4e17 cm
-#   k ~ 1.8, eps_e = 0.1, eps_B = 0.1, p = 2.79
-#   eps_T = 0.4 (thermal electron fraction)
-#
-# Translating density to blastwave convention:
-#   n(r) = nwind * (r/1e17)^{-k}
-#   At r = R_45 = 9.4e17: n = 191
-#   nwind = 191 * 9.4^1.8 ~ 10770
-
-nwind = 191.0 * (9.4)**1.8  # ~ 10770
+# Inspired by Rhodes+2025 best-fit spherical model (k ~ 1.8).
+# We use a simplified parameterization for illustration.
 
 P = {
-    "Eiso": 1e52,
-    "lf":   10.0,            # initially relativistic
-    "A":    nwind,
-    "n0":   0.0,             # wind-dominated
+    "Eiso": 1.5e52,
+    "lf":   8.0,              # initially relativistic
+    "A":    4000.0,            # wind density scale
+    "n0":   0.0,               # wind-dominated
     "eps_e": 0.1,
-    "eps_b": 0.1,
-    "eps_T": 0.4,            # thermal electron fraction (Rhodes+2025)
-    "p":     2.79,
+    "eps_b": 0.04,
+    "p":     2.4,
     "theta_v": 0.0,
     "d":     d_L,
     "z":     z,
 }
 
-print(f"nwind = {nwind:.0f} cm^-3")
-print(f"d_L = {d_L:.0f} Mpc")
-print(f"Parameters: E={P['Eiso']:.1e}, Gamma0={P['lf']}, p={P['p']}, eps_T={P['eps_T']}")
+print(f"Parameters: E={P['Eiso']:.1e}, Gamma0={P['lf']}, p={P['p']}")
 
-# ---------- Compute models ----------
+# ---------- Compute model ----------
 t_model = np.geomspace(50 * DAY, 1200 * DAY, 200)
 
 freq_list = [1.28e9, 3e9, 5e9, 15.5e9, 86.25e9, 101.75e9]
 freq_labels = ['1.28 GHz', '3 GHz', '5 GHz', '15.5 GHz', '86.25 GHz', '101.75 GHz']
-colors = ['C3', 'C4', 'C0', 'C1', 'C2', 'C5']
+colors = ['#d62728', '#9467bd', '#1f77b4', '#ff7f0e', '#2ca02c', '#8c564b']
 markers = ['v', 'D', 's', 'o', '^', 'x']
 
-# Non-thermal only (sync_ssa)
-F_nonthermal = {}
-print("\n--- Non-thermal only (sync_ssa) ---")
+F_model = {}
+print("\nComputing sync_ssa model...")
 for nu_hz, label in zip(freq_list, freq_labels):
-    print(f"  Computing {label}...")
-    F_nonthermal[nu_hz] = FluxDensity_spherical(
+    print(f"  {label}...")
+    F_model[nu_hz] = FluxDensity_spherical(
         t_model, nu_hz * np.ones_like(t_model), P,
         k=1.8, tmin=1.0, tmax=1500 * DAY,
         model="sync_ssa",
     )
 
-# Thermal + non-thermal (sync_thermal)
-F_thermal = {}
-print("\n--- Thermal + non-thermal (sync_thermal) ---")
-for nu_hz, label in zip(freq_list, freq_labels):
-    print(f"  Computing {label}...")
-    F_thermal[nu_hz] = FluxDensity_spherical(
-        t_model, nu_hz * np.ones_like(t_model), P,
-        k=1.8, tmin=1.0, tmax=1500 * DAY,
-        model="sync_thermal",
-    )
-
-# ---------- Plot: side-by-side comparison ----------
-fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+# ---------- Plot ----------
+fig, ax = plt.subplots(figsize=(10, 7))
 t_days = t_model / DAY
 
-for ax, F_model, title in zip(
-    axes,
-    [F_nonthermal, F_thermal],
-    ['Non-thermal only (sync_ssa)', 'Thermal + non-thermal (sync_thermal, $\\epsilon_T=0.4$)']
+for nu_hz, freq_ghz, label, color, marker in zip(
+    freq_list,
+    [1.28, 3.0, 5.0, 15.5, 86.25, 101.75],
+    freq_labels, colors, markers
 ):
-    for nu_hz, freq_ghz, label, color, marker in zip(
-        freq_list,
-        [1.28, 3.0, 5.0, 15.5, 86.25, 101.75],
-        freq_labels, colors, markers
-    ):
-        # Data
-        if freq_ghz in freq_groups:
-            d = freq_groups[freq_ghz]
-            ax.errorbar(d[:, 0], d[:, 1], yerr=d[:, 2],
-                        fmt=marker, color=color, label=f'{label} data',
-                        capsize=2, ms=4, alpha=0.7)
-        # Model
-        ax.plot(t_days, F_model[nu_hz], '-', color=color, alpha=0.6, lw=1.5)
+    # Data
+    if freq_ghz in freq_groups:
+        d = freq_groups[freq_ghz]
+        ax.errorbar(d[:, 0], d[:, 1], yerr=d[:, 2],
+                    fmt=marker, color=color, label=f'{label} data',
+                    capsize=3, ms=5, alpha=0.7, markeredgewidth=0.5, zorder=5)
+    # Model
+    ax.plot(t_days, F_model[nu_hz], '-', color=color, lw=2, alpha=0.8)
 
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_xlabel('Time since discovery (days)', fontsize=12)
-    ax.set_title(title, fontsize=11)
-    ax.set_xlim(50, 1200)
-    ax.set_ylim(0.01, 5)
+ax.set_xscale('log')
+ax.set_yscale('log')
+ax.set_xlabel('Time since discovery (days)')
+ax.set_ylabel('Flux density (mJy)')
+ax.set_title('AT2022cmc Radio Afterglow (sync_ssa)', fontweight='bold')
+ax.set_xlim(50, 1200)
+ax.set_ylim(0.005, 5)
+ax.legend(ncol=2, loc='upper right', framealpha=0.9)
+ax.tick_params(which='both', direction='in', top=True, right=True)
 
-axes[0].set_ylabel('Flux density (mJy)', fontsize=12)
-axes[0].legend(fontsize=7, ncol=2, loc='upper right')
-
-fig.suptitle(
-    f'AT2022cmc — Spherical blast wave\n'
-    f'$E_{{iso}}$={P["Eiso"]:.0e} erg, $\\Gamma_0$={P["lf"]:.0f}, '
-    f'$k$=1.8, $n_{{wind}}$={P["A"]:.0f}, '
-    f'$\\epsilon_e$={P["eps_e"]}, $\\epsilon_B$={P["eps_b"]:.2g}, $p$={P["p"]}',
-    fontsize=12, y=1.02,
-)
 plt.tight_layout()
-plt.savefig('tests/at2022cmc_radio.png', dpi=150, bbox_inches='tight')
-print("\nSaved tests/at2022cmc_radio.png")
+outdir = os.path.join(os.path.dirname(__file__), '..', 'docs', 'examples', 'img')
+os.makedirs(outdir, exist_ok=True)
+outpath = os.path.join(outdir, 'at2022cmc_radio.png')
+plt.savefig(outpath, dpi=150, bbox_inches='tight')
+print(f"\nSaved {outpath}")
 plt.show()

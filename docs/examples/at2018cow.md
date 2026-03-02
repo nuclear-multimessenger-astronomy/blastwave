@@ -51,18 +51,20 @@ AT2018cow's radio emission is consistent with a sub-relativistic, quasi-spherica
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| $E_k$ | $2 \times 10^{49}$ erg | Kinetic energy (isotropic) |
-| $\Gamma_0$ | 1.03 | $\beta \approx 0.24$ ($v \sim 0.24c$) |
-| $n_0$ | 200 cm$^{-3}$ | Dense CSM from pre-explosion mass loss |
-| $k$ | 0 | Constant density (ISM-like shell) |
-| $\epsilon_e$ | 0.15 | Electron energy fraction |
-| $\epsilon_B$ | 0.1 | Near equipartition (Ho+2019) |
-| $p$ | 2.8 | Electron spectral index |
-| $d$ | 60 Mpc | Luminosity distance |
-| $z$ | 0.0141 | Redshift |
+| Parameter | ISM model | Wind model | Notes |
+|-----------|-----------|------------|-------|
+| \(E_k\) | \(2 \times 10^{49}\) erg | \(5 \times 10^{49}\) erg | Kinetic energy |
+| \(\Gamma_0\) | 1.1 | 1.03 | Mildly relativistic |
+| \(n_0\) / \(A_*\) | 100 cm\(^{-3}\) | 20 | Dense CSM |
+| \(k\) | 0 | 2 | Density profile index |
+| \(\varepsilon_e\) | 0.1 | 0.12 | Electron energy fraction |
+| \(\varepsilon_B\) | 0.03 | 0.05 | Magnetic energy fraction |
+| \(p\) | 2.8 | 2.8 | Electron spectral index |
+| \(d\) | 60 Mpc | 60 Mpc | Luminosity distance |
+| \(z\) | 0.0141 | 0.0141 | Redshift |
 
 !!! note
-    The high density ($n_0 \sim 100$--$200$ cm$^{-3}$) reflects a dense CSM shell from pre-explosion mass loss, not the diffuse ISM. This is typical for FBOTs which are thought to occur in dense environments.
+    The high density reflects a dense CSM from pre-explosion mass loss, not the diffuse ISM. This is typical for FBOTs which are thought to occur in dense environments.
 
 ## Computing the model
 
@@ -72,9 +74,9 @@ from blastwave import FluxDensity_spherical
 DAY = 86400.0
 
 P = {
-    "Eiso": 2e49, "lf": 1.03,
-    "A": 0.0, "n0": 200.0,
-    "eps_e": 0.15, "eps_b": 0.1, "p": 2.8,
+    "Eiso": 2e49, "lf": 1.1,
+    "A": 0.0, "n0": 100.0,
+    "eps_e": 0.1, "eps_b": 0.03, "p": 2.8,
     "theta_v": 0.0, "d": 60.0, "z": 0.0141,
 }
 
@@ -153,8 +155,8 @@ The same infrastructure supports wind-stratified CSM ($k = 2$):
 ```python
 P_wind = {
     "Eiso": 5e49, "lf": 1.03,
-    "A": 30.0, "n0": 0.0,
-    "eps_e": 0.15, "eps_b": 0.1, "p": 2.8,
+    "A": 20.0, "n0": 0.0,
+    "eps_e": 0.12, "eps_b": 0.05, "p": 2.8,
     "theta_v": 0.0, "d": 60.0, "z": 0.0141,
 }
 

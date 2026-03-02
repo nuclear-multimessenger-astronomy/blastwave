@@ -47,7 +47,8 @@ nav:
   - Examples:
     - AT2018cow Radio: examples/at2018cow.md
     - AT2022cmc Radio: examples/at2022cmc.md
-    - GRB 140304A: examples/grb140304a.md
+    - GRB 200826A: examples/grb200826a.md
+    - Physics Showcase: examples/grb_afterglow.md
   - API Reference:
     - Overview: api/index.md
     - Numeric Model: api/numeric.md

@@ -1,16 +1,16 @@
-# AT2022cmc: Thermal Electrons in a Relativistic TDE
+# AT2022cmc: Modeling a Relativistic TDE
 
-This example demonstrates the `sync_thermal` radiation model by modeling the radio emission from the jetted tidal disruption event (TDE) AT2022cmc, comparing non-thermal only vs thermal+non-thermal synchrotron.
+This example demonstrates the `FluxDensity_spherical` function with a wind-like CSM density by modeling the multi-frequency radio emission from the jetted tidal disruption event (TDE) AT2022cmc.
 
 ## Background
 
-AT2022cmc was discovered on 2022 February 11 at redshift $z = 1.193$ ($d_L \approx 8260$ Mpc). It was identified as only the fourth relativistic TDE, with a powerful relativistic jet launched when a star was disrupted by a supermassive black hole. Its multi-frequency radio light curves extend over 3 years, making it an excellent testbed for afterglow models.
+AT2022cmc was discovered on 2022 February 11 at redshift \(z = 1.193\) (\(d_L \approx 8220\) Mpc). It was identified as only the fourth relativistic TDE, with a powerful relativistic jet launched when a star was disrupted by a supermassive black hole. Its multi-frequency radio light curves extend over 3 years, making it an excellent testbed for afterglow models.
 
 Key references:
 
 - Rhodes et al. 2025, ApJ (arXiv:2506.13618) --- 3-year radio monitoring, spherical blast wave modeling with thermal electrons
 - Margalit & Quataert 2021, ApJL, 923, L14 --- MQ21 thermal synchrotron formalism
-- Ferguson & Margalit 2025 --- FM25 full-volume post-shock extension
+- Ferguson & Margalit 2025 --- FM25 full-volume post-shock extension ([GitHub](https://github.com/RossFerguson1/synchrotron_shock_model))
 
 ## Radio data
 
@@ -27,25 +27,18 @@ We use multi-frequency radio data from Rhodes+2025 (Table 1):
 
 ## Physical parameters
 
-The paper's best-fit spherical model parameters:
+Illustrative spherical blast wave parameters inspired by Rhodes+2025:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| $E_{iso}$ | $10^{52}$ erg | Isotropic-equivalent kinetic energy |
-| $\Gamma_0$ | 10 | Initial Lorentz factor |
-| $k$ | 1.8 | CSM density power-law index |
-| $n_{wind}$ | 10,770 cm$^{-3}$ | Density normalization at $r = 10^{17}$ cm |
-| $\epsilon_e$ | 0.1 | Non-thermal electron energy fraction |
-| $\epsilon_B$ | 0.1 | Magnetic field energy fraction |
-| $p$ | 2.79 | Electron spectral index |
-| $\epsilon_T$ | 0.4 | Thermal electron efficiency |
-| $z$ | 1.193 | Redshift |
-
-### Density translation
-
-The paper parameterizes the CSM as $n = 191 \, (R/R_{45})^{-1.795}$ where $R_{45} = 9.4 \times 10^{17}$ cm. In blastwave, the density convention is $n(r) = A \cdot (r / 10^{17} \, \mathrm{cm})^{-k}$, so:
-
-$$n_{wind} = 191 \times 9.4^{1.8} \approx 10{,}770$$
+| \(E_\mathrm{iso}\) | \(1.5 \times 10^{52}\) erg | Isotropic-equivalent kinetic energy |
+| \(\Gamma_0\) | 8 | Initial Lorentz factor |
+| \(k\) | 1.8 | CSM density power-law index |
+| \(A\) | 4000 | Density normalization at \(r = 10^{17}\) cm |
+| \(\varepsilon_e\) | 0.1 | Electron energy fraction |
+| \(\varepsilon_B\) | 0.04 | Magnetic field energy fraction |
+| \(p\) | 2.4 | Electron spectral index |
+| \(z\) | 1.193 | Redshift |
 
 ## Computing the model
 
@@ -66,89 +59,56 @@ def luminosity_distance(z, H0=70.0, Om=0.3):
 
 d_L = luminosity_distance(z)
 
-nwind = 191.0 * (9.4)**1.8
-
 P = {
-    "Eiso": 1e52, "lf": 10.0,
-    "A": nwind, "n0": 0.0,
-    "eps_e": 0.1, "eps_b": 0.1, "eps_T": 0.4,
-    "p": 2.79,
+    "Eiso": 1.5e52, "lf": 8.0,
+    "A": 4000.0, "n0": 0.0,
+    "eps_e": 0.1, "eps_b": 0.04,
+    "p": 2.4,
     "theta_v": 0.0, "d": d_L, "z": z,
 }
 
 t_model = np.geomspace(50 * DAY, 1200 * DAY, 200)
 
-# Non-thermal only
-F_ssa = FluxDensity_spherical(
-    t_model, 15.5e9 * np.ones_like(t_model), P,
-    k=1.8, tmin=1.0, tmax=1500 * DAY, model="sync_ssa",
-)
-
-# Thermal + non-thermal
-F_thermal = FluxDensity_spherical(
-    t_model, 15.5e9 * np.ones_like(t_model), P,
-    k=1.8, tmin=1.0, tmax=1500 * DAY, model="sync_thermal",
-)
+# Compute sync_ssa for each frequency band
+for nu_hz in [1.28e9, 3e9, 5e9, 15.5e9, 86.25e9, 101.75e9]:
+    flux = FluxDensity_spherical(
+        t_model, nu_hz * np.ones_like(t_model), P,
+        k=1.8, tmin=1.0, tmax=1500 * DAY, model="sync_ssa",
+    )
 ```
 
 Key choices:
 
 - **`Spherical` profile** --- isotropic energy, 1-cell tophat fast path
-- **`k=1.8`** --- wind-like CSM ($n \propto r^{-1.8}$)
-- **`model="sync_thermal"`** --- MQ21 thermal + non-thermal synchrotron with self-absorption
-- **`eps_T=0.4`** --- thermal electron efficiency from the paper's fit
-
-## Thermal vs non-thermal comparison
-
-The `sync_thermal` model (Margalit & Quataert 2021) self-consistently computes:
-
-1. **Thermal electrons**: a relativistic Maxwellian distribution at the post-shock temperature, producing a thermal synchrotron bump
-2. **Non-thermal electrons**: the usual power-law tail ($\propto \gamma^{-p}$) with fraction $\delta = \epsilon_e / \epsilon_T$
-3. **Self-absorption**: both thermal and non-thermal absorption coefficients
-
-The thermal component steepens the high-frequency spectral index beyond what non-thermal synchrotron alone can produce. This is critical for AT2022cmc, where the NOEMA 86--102 GHz data show a steep decline that pure power-law synchrotron struggles to reproduce.
+- **`k=1.8`** --- wind-like CSM (\(n \propto r^{-1.8}\))
+- **`model="sync_ssa"`** --- synchrotron with self-absorption for the multi-frequency radio evolution
 
 ## Plotting
 
-```python
-import matplotlib.pyplot as plt
-
-fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
-t_days = t_model / DAY
-
-# Left: non-thermal only
-axes[0].plot(t_days, F_ssa, '-', color='C1')
-axes[0].set_title('Non-thermal only (sync_ssa)')
-
-# Right: thermal + non-thermal
-axes[1].plot(t_days, F_thermal, '-', color='C1')
-axes[1].set_title('Thermal + non-thermal (sync_thermal)')
-
-for ax in axes:
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_xlabel('Time since discovery (days)')
-axes[0].set_ylabel('Flux density (mJy)')
-
-plt.tight_layout()
-plt.savefig('at2022cmc_radio.png', dpi=150)
-```
-
 ![AT2022cmc radio light curves](img/at2022cmc_radio.png)
+
+The model captures the key multi-frequency behavior:
+
+- **High frequencies** (86, 102 GHz): Peak early and decline rapidly as the blastwave decelerates
+- **Mid frequencies** (15.5 GHz): Extended plateau around 100--400 days before declining
+- **Low frequencies** (1.28, 3, 5 GHz): Still rising as the SSA frequency sweeps through the band
 
 ## Discussion
 
-The thermal electron model improves the fit in two ways:
+The synchrotron self-absorption model reproduces the qualitative frequency-dependent evolution of the radio light curves. The high-frequency NOEMA data constrain the optically thin spectrum, while the low-frequency MeerKAT data trace the SSA turnover.
 
-1. **High-frequency suppression**: the thermal synchrotron spectrum has an exponential cutoff above the thermal peak frequency $\nu_\Theta$, naturally steepening the mm-band light curves
-2. **Self-consistent SSA**: thermal electrons contribute additional absorption at low frequencies, affecting the SSA turnover
+### Thermal electrons
 
-### Limitations
+Rhodes+2025 found that a thermal+non-thermal electron model (`sync_thermal`) with \(\varepsilon_T = 0.4\) better reproduces the steep high-frequency spectral index. The thermal component (Margalit & Quataert 2021) adds an exponential cutoff above the thermal peak frequency, steepening the mm-band decline.
 
-- The spherical blast wave is an approximation --- the actual jet is likely structured
-- The MQ21 formalism assumes a single-zone post-shock region with uniform $\Theta$
-- The density power-law index $k = 1.8$ is approximate; the true CSM profile may be more complex
-- Parameter degeneracies exist between $\epsilon_T$, $\epsilon_e$, and $\epsilon_B$
+```python
+# Thermal + non-thermal model
+P_thermal = {**P, "eps_T": 0.4}
+F_thermal = FluxDensity_spherical(
+    t_model, 86.25e9 * np.ones_like(t_model), P_thermal,
+    k=1.8, tmin=1.0, tmax=1500 * DAY, model="sync_thermal",
+)
+```
 
 ## Full script
 

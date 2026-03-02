@@ -14,6 +14,17 @@ import sys
 sys.path.insert(0, "..")
 from blastwave import FluxDensity_spherical
 
+# ---------- Plot style ----------
+plt.rcParams.update({
+    'font.size': 14,
+    'axes.labelsize': 16,
+    'axes.titlesize': 15,
+    'xtick.labelsize': 13,
+    'ytick.labelsize': 13,
+    'legend.fontsize': 12,
+    'figure.titlesize': 17,
+})
+
 # ---------- Published radio data (Ho+2019, Margutti+2019) ----------
 
 # Time in days since explosion (MJD 58285.441)
@@ -83,12 +94,12 @@ DAY = 86400.0  # seconds per day
 
 P_ism = {
     "Eiso": 2e49,         # kinetic energy (erg)
-    "lf":   1.03,          # Gamma=1.03 → beta~0.24 (v ~ 0.24c, sub-relativistic)
+    "lf":   1.1,           # Gamma=1.1 → beta~0.42
     "A":    0.0,
-    "n0":   200.0,         # dense CSM shell
-    "eps_e": 0.15,
-    "eps_b": 0.1,          # near equipartition (Ho+2019)
-    "p":     2.8,          # slightly flatter to reduce freq spread
+    "n0":   100.0,         # dense CSM
+    "eps_e": 0.1,
+    "eps_b": 0.03,
+    "p":     2.8,
     "theta_v": 0.0,
     "d":     60.0,
     "z":     0.0141,
@@ -96,11 +107,11 @@ P_ism = {
 
 P_wind = {
     "Eiso": 5e49,
-    "lf":   1.03,
-    "A":    30.0,          # dense wind
+    "lf":   1.03,          # Gamma=1.03 → beta~0.24
+    "A":    20.0,           # wind density scale
     "n0":   0.0,
-    "eps_e": 0.15,
-    "eps_b": 0.1,
+    "eps_e": 0.12,
+    "eps_b": 0.05,
     "p":     2.8,
     "theta_v": 0.0,
     "d":     60.0,
@@ -110,7 +121,7 @@ P_wind = {
 t_model = np.geomspace(1.0 * DAY, 200.0 * DAY, 150)
 freqs = [6e9, 10e9, 15.5e9]
 freq_labels = ['6 GHz', '10 GHz', '15.5 GHz']
-colors = ['C0', 'C1', 'C2']
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
 data_sets = [data_6GHz, data_10GHz, data_15GHz]
 markers = ['s', 'o', '^']
 
@@ -133,34 +144,38 @@ for nu, label in zip(freqs, freq_labels):
                                         model="sync_ssa")
 
 # ---------- Plot ----------
-fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+fig, axes = plt.subplots(1, 2, figsize=(15, 6), sharey=True)
 t_days = t_model / DAY
 
-for ax, F_model, P, k_val, title_extra in [
-    (axes[0], F_ism, P_ism, 0,
-     f'ISM (k=0, sync_ssa)\n$E_k$={P_ism["Eiso"]:.0e}, $n_0$={P_ism["n0"]}, '
-     f'$\\Gamma_0$={P_ism["lf"]}, $\\epsilon_B$={P_ism["eps_b"]}, p={P_ism["p"]}'),
-    (axes[1], F_wind, P_wind, 2,
-     f'Wind (k=2, sync_ssa)\n$E_k$={P_wind["Eiso"]:.0e}, $A_*$={P_wind["A"]}, '
-     f'$\\Gamma_0$={P_wind["lf"]}, $\\epsilon_B$={P_wind["eps_b"]}, p={P_wind["p"]}'),
-]:
-    for i, (nu, label, color, marker, data) in enumerate(
-            zip(freqs, freq_labels, colors, markers, data_sets)):
+panel_info = [
+    (axes[0], F_ism, P_ism, 'ISM (k = 0)'),
+    (axes[1], F_wind, P_wind, 'Wind (k = 2)'),
+]
+
+for ax, F_model, P, title in panel_info:
+    for nu, label, color, marker, data in zip(freqs, freq_labels, colors, markers, data_sets):
         ax.errorbar(data[:, 0], data[:, 1], yerr=data[:, 2],
-                    fmt=marker, color=color, label=f'{label} data', capsize=2, ms=5)
-        ax.plot(t_days, F_model[nu], '-', color=color, alpha=0.7, label=f'{label} model')
+                    fmt=marker, color=color, label=f'{label} data',
+                    capsize=3, ms=7, markeredgewidth=0.5, zorder=5)
+        ax.plot(t_days, F_model[nu], '-', color=color, lw=2, alpha=0.8,
+                label=f'{label} model')
 
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel('Time since explosion (days)')
-    ax.set_title(title_extra, fontsize=10)
-    ax.legend(fontsize=7, ncol=2)
+    ax.set_title(title)
+    ax.legend(ncol=2, loc='upper right', framealpha=0.9)
     ax.set_xlim(1, 200)
     ax.set_ylim(0.01, 5)
+    ax.tick_params(which='both', direction='in', top=True, right=True)
 
 axes[0].set_ylabel('Flux density (mJy)')
-fig.suptitle('AT2018cow Radio — Spherical Blast Wave + SSA', fontsize=13, y=1.02)
+fig.suptitle('AT2018cow Radio Light Curves (sync_ssa)', fontweight='bold')
 plt.tight_layout()
-plt.savefig('tests/at2018cow_radio.png', dpi=150, bbox_inches='tight')
-print("Saved tests/at2018cow_radio.png")
+import os
+outdir = os.path.join(os.path.dirname(__file__), '..', 'docs', 'examples', 'img')
+os.makedirs(outdir, exist_ok=True)
+outpath = os.path.join(outdir, 'at2018cow_radio.png')
+plt.savefig(outpath, dpi=150, bbox_inches='tight')
+print(f"Saved {outpath}")
 plt.show()

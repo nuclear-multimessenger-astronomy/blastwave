@@ -201,5 +201,5 @@ flux = blastwave.FluxDensity_tophat(t, nu, P, model="numeric")
 - Sari, R., Piran, T., & Narayan, R. (1998). *ApJL*, 497, L17.
 - Wijers, R. A. M. J. & Galama, T. J. (1999). *ApJ*, 523, 177.
 - Margalit, B. & Quataert, E. (2021). *ApJ*. [arXiv:2111.00012](https://arxiv.org/abs/2111.00012)
-- Ferguson, R. & Margalit, B. (2025). [arXiv:2509.16313](https://arxiv.org/abs/2509.16313)
+- Ferguson, R. & Margalit, B. (2025). [arXiv:2509.16313](https://arxiv.org/abs/2509.16313) | [GitHub](https://github.com/RossFerguson1/synchrotron_shock_model)
 - Dermer, C. D. (2009). *High Energy Radiation from Black Holes.* Princeton.
