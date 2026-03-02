@@ -1,14 +1,14 @@
 [package]
-name = "jetsimpy-cpu"
+name = "blastwave-cpu"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "jetsimpy_extension"
+name = "blastwave_extension"
 crate-type = ["cdylib"]
 
 [dependencies]
-jetsimpy-rs = { path = ".." }
+blastwave = { path = ".." }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
 rayon = "1.10"

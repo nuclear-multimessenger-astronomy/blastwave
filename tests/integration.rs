@@ -6,14 +6,14 @@
 
 use std::collections::HashMap;
 
-use jetsimpy_rs::constants::*;
-use jetsimpy_rs::hydro::config::{JetConfig, SpreadMode};
-use jetsimpy_rs::hydro::sim_box::SimBox;
-use jetsimpy_rs::hydro::interpolate::Interpolator;
-use jetsimpy_rs::hydro::tools::Tool;
-use jetsimpy_rs::afterglow::eats::EATS;
-use jetsimpy_rs::afterglow::afterglow::Afterglow;
-use jetsimpy_rs::afterglow::forward_grid::ForwardGrid;
+use blastwave::constants::*;
+use blastwave::hydro::config::{JetConfig, SpreadMode};
+use blastwave::hydro::sim_box::SimBox;
+use blastwave::hydro::interpolate::Interpolator;
+use blastwave::hydro::tools::Tool;
+use blastwave::afterglow::eats::EATS;
+use blastwave::afterglow::afterglow::Afterglow;
+use blastwave::afterglow::forward_grid::ForwardGrid;
 
 /// Build a top-hat jet config matching the Python quick-start example.
 fn tophat_config() -> JetConfig {

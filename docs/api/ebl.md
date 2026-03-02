@@ -4,7 +4,7 @@
 
 Extragalactic Background Light (EBL) absorption attenuates high-energy photons (E > ~10 GeV) via pair production with the diffuse EBL photon field. This is significant for TeV observations of distant sources.
 
-jetsimpy-rs implements the Franceschini & Rodighiero (2018) optical depth table with bilinear interpolation.
+blastwave implements the Franceschini & Rodighiero (2018) optical depth table with bilinear interpolation.
 
 ## Usage
 
@@ -13,7 +13,7 @@ jetsimpy-rs implements the Franceschini & Rodighiero (2018) optical depth table 
 Add `ebl=True` to any flux density call:
 
 ```python
-import jetsimpy_rs as jsr
+import blastwave as jsr
 
 P = {
     "Eiso": 1e53, "lf": 300, "theta_c": 0.1,
@@ -44,7 +44,7 @@ The `ebl` parameter is available on all flux density methods:
 Compute optical depth directly:
 
 ```python
-from jetsimpy_rs import jetsimpy_extension as ext
+from blastwave import blastwave_extension as ext
 import numpy as np
 
 # Single frequency

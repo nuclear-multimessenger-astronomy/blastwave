@@ -1,17 +1,17 @@
 """
-Comparison tests between jetsimpy-rs and the original jetsimpy.
+Comparison tests between blastwave and the original jetsimpy.
 
 Each test runs both implementations with identical parameters and asserts
 that the relative error is below a threshold (5e-3).  The ~0.2% differences
 arise from improved adaptive quadrature (forced refinement of all-zero
-intervals) and zero-value interpolation that make jetsimpy-rs slightly more
+intervals) and zero-value interpolation that make blastwave slightly more
 accurate than the original C++ implementation in edge cases.
 """
 
 import numpy as np
 import pytest
 
-import jetsimpy_rs
+import blastwave
 import jetsimpy
 
 # Shared parameters (from jetsimpy examples/quick_start.py)
@@ -42,7 +42,7 @@ def _relative_error(a, b):
 
 
 def test_tophat_flux_density():
-    fd_rs = jetsimpy_rs.FluxDensity_tophat(T_SECONDS, NU, P)
+    fd_rs = blastwave.FluxDensity_tophat(T_SECONDS, NU, P)
     fd_orig = jetsimpy.FluxDensity_tophat(T_SECONDS, NU, P)
 
     assert fd_rs.shape == fd_orig.shape
@@ -51,7 +51,7 @@ def test_tophat_flux_density():
 
 
 def test_gaussian_flux_density():
-    fd_rs = jetsimpy_rs.FluxDensity_gaussian(T_SECONDS, NU, P)
+    fd_rs = blastwave.FluxDensity_gaussian(T_SECONDS, NU, P)
     fd_orig = jetsimpy.FluxDensity_gaussian(T_SECONDS, NU, P)
 
     assert fd_rs.shape == fd_orig.shape
@@ -60,7 +60,7 @@ def test_gaussian_flux_density():
 
 
 def test_powerlaw_flux_density():
-    fd_rs = jetsimpy_rs.FluxDensity_powerlaw(T_SECONDS, NU, P)
+    fd_rs = blastwave.FluxDensity_powerlaw(T_SECONDS, NU, P)
     fd_orig = jetsimpy.FluxDensity_powerlaw(T_SECONDS, NU, P)
 
     assert fd_rs.shape == fd_orig.shape

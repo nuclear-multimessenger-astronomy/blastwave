@@ -43,7 +43,7 @@ The paper's best-fit spherical model parameters:
 
 ### Density translation
 
-The paper parameterizes the CSM as $n = 191 \, (R/R_{45})^{-1.795}$ where $R_{45} = 9.4 \times 10^{17}$ cm. In jetsimpy-rs, the density convention is $n(r) = A \cdot (r / 10^{17} \, \mathrm{cm})^{-k}$, so:
+The paper parameterizes the CSM as $n = 191 \, (R/R_{45})^{-1.795}$ where $R_{45} = 9.4 \times 10^{17}$ cm. In blastwave, the density convention is $n(r) = A \cdot (r / 10^{17} \, \mathrm{cm})^{-k}$, so:
 
 $$n_{wind} = 191 \times 9.4^{1.8} \approx 10{,}770$$
 
@@ -51,7 +51,7 @@ $$n_{wind} = 191 \times 9.4^{1.8} \approx 10{,}770$$
 
 ```python
 import numpy as np
-from jetsimpy_rs import FluxDensity_spherical
+from blastwave import FluxDensity_spherical
 from scipy.integrate import quad
 
 DAY = 86400.0
@@ -150,4 +150,4 @@ The thermal electron model improves the fit in two ways:
 
 ## Full script
 
-The complete analysis script is at [`tests/at2022cmc_radio.py`](https://github.com/your-repo/jetsimpy-rs/blob/main/tests/at2022cmc_radio.py).
+The complete analysis script is at [`tests/at2022cmc_radio.py`](https://github.com/nuclear-multimessenger-astronomy/blastwave/blob/main/tests/at2022cmc_radio.py).

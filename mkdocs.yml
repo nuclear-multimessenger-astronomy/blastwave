@@ -1,4 +1,4 @@
-site_name: jetsimpy-rs
+site_name: blastwave
 site_description: Fast Rust GRB afterglow simulator with Python bindings
 site_author: Michael Coughlin
 

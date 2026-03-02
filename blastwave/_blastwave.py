@@ -1,8 +1,8 @@
 import numpy as np
 try:
-    from . import jetsimpy_extension as _extension
+    from . import blastwave_extension as _extension
 except ImportError:
-    import jetsimpy_extension as _extension
+    import blastwave_extension as _extension
 from ._grid import Uniform
 
 _C = 29979245800.0

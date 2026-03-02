@@ -147,16 +147,16 @@ fn interpolate_zero_luminosities(results: &mut [f64], t_s: &[f64], nu_s: &[f64])
     }
 }
 
-use jetsimpy_rs::constants::*;
-use jetsimpy_rs::hydro::config::{JetConfig, SpreadMode};
-use jetsimpy_rs::hydro::sim_box::SimBox;
-use jetsimpy_rs::hydro::interpolate::Interpolator;
-use jetsimpy_rs::hydro::tools::Tool;
-use jetsimpy_rs::afterglow::blast::Blast;
-use jetsimpy_rs::afterglow::eats::EATS;
-use jetsimpy_rs::afterglow::afterglow::Afterglow;
-use jetsimpy_rs::afterglow::forward_grid::ForwardGrid;
-use jetsimpy_rs::afterglow::ebl;
+use blastwave::constants::*;
+use blastwave::hydro::config::{JetConfig, SpreadMode};
+use blastwave::hydro::sim_box::SimBox;
+use blastwave::hydro::interpolate::Interpolator;
+use blastwave::hydro::tools::Tool;
+use blastwave::afterglow::blast::Blast;
+use blastwave::afterglow::eats::EATS;
+use blastwave::afterglow::afterglow::Afterglow;
+use blastwave::afterglow::forward_grid::ForwardGrid;
+use blastwave::afterglow::ebl;
 
 #[pyfunction]
 #[pyo3(name = "ebl_tau")]
@@ -173,7 +173,7 @@ fn py_ebl_tau_array<'py>(py: Python<'py>, nu: PyReadonlyArray1<f64>, z: f64) -> 
 }
 
 #[pymodule]
-fn jetsimpy_extension(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn blastwave_extension(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJetConfig>()?;
     m.add_class::<PyJet>()?;
     m.add_class::<PyBlast>()?;

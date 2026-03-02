@@ -21,7 +21,7 @@ This approach is more accurate for non-standard electron distributions and enabl
 ## Usage
 
 ```python
-import jetsimpy_rs as jsr
+import blastwave as jsr
 
 P = {
     "Eiso": 1e53, "lf": 300, "theta_c": 0.1,

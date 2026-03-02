@@ -1,8 +1,8 @@
-# jetsimpy-rs
+# blastwave
 
 Fast Rust GRB afterglow simulator with Python bindings.
 
-A reimplementation of [jetsimpy](https://github.com/hveerten/jetsimpy) in Rust, providing hydrodynamic evolution and synchrotron radiation from relativistic blast waves interacting with a circumburst medium. Designed for modeling gamma-ray burst (GRB) afterglows, fast blue optical transients (FBOTs), and other explosive transients.
+A high-performance relativistic blast wave simulator in Rust with Python bindings. Computes hydrodynamic evolution and multi-band synchrotron radiation from relativistic blast waves interacting with a circumburst medium. Designed for modeling gamma-ray burst (GRB) afterglows, fast blue optical transients (FBOTs), and other explosive transients.
 
 ## Key Features
 
@@ -13,13 +13,13 @@ A reimplementation of [jetsimpy](https://github.com/hveerten/jetsimpy) in Rust, 
 - **Reverse shock** --- coupled forward-reverse shock dynamics with magnetization
 - **Forward-mapping flux** --- pre-computed radiation grid for fast multi-frequency light curves
 - **Parallel** --- Rayon multithreading for batch luminosity computations
-- **Python bindings** --- `jetsimpy_rs` package via PyO3/maturin with numpy arrays
+- **Python bindings** --- `blastwave` package via PyO3/maturin with numpy arrays
 
 ## Quick Example
 
 ```python
 import numpy as np
-from jetsimpy_rs import FluxDensity_tophat
+from blastwave import FluxDensity_tophat
 
 P = {
     "Eiso": 1e52, "lf": 300, "theta_c": 0.1,

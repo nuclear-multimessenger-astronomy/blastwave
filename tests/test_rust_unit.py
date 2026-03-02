@@ -1,5 +1,5 @@
 """
-Unit tests for the jetsimpy-rs Rust extension and Python wrappers.
+Unit tests for the blastwave Rust extension and Python wrappers.
 
 These tests verify basic functionality without requiring the original jetsimpy.
 """
@@ -7,7 +7,7 @@ These tests verify basic functionality without requiring the original jetsimpy.
 import numpy as np
 import pytest
 
-from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+from blastwave import Jet, TopHat, ForwardJetRes
 
 
 # Shared minimal parameters
@@ -113,7 +113,7 @@ NU_FWD = 1e18
 
 def test_forward_flux_positive_and_finite():
     """Forward-mapping should produce positive, finite flux values."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     fd = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, flux_method="forward")
     assert fd.shape == T_FWD.shape
     assert np.all(np.isfinite(fd)), "Forward flux contains non-finite values"
@@ -122,7 +122,7 @@ def test_forward_flux_positive_and_finite():
 
 def test_forward_agrees_with_eats():
     """Forward-mapping should agree with EATS within 0.1 dex for on-axis tophat."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD)
     fd_fwd = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
@@ -134,7 +134,7 @@ def test_forward_agrees_with_eats():
 
 def test_forward_gaussian():
     """Forward-mapping should work for Gaussian jet profile."""
-    from jetsimpy_rs import FluxDensity_gaussian
+    from blastwave import FluxDensity_gaussian
     fd_eats = FluxDensity_gaussian(T_FWD, NU_FWD, P_FWD)
     fd_fwd = FluxDensity_gaussian(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
@@ -146,7 +146,7 @@ def test_forward_gaussian():
 
 def test_forward_powerlaw():
     """Forward-mapping should work for power-law jet profile."""
-    from jetsimpy_rs import FluxDensity_powerlaw
+    from blastwave import FluxDensity_powerlaw
     fd_eats = FluxDensity_powerlaw(T_FWD, NU_FWD, P_FWD)
     fd_fwd = FluxDensity_powerlaw(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
@@ -158,7 +158,7 @@ def test_forward_powerlaw():
 
 def test_forward_offaxis_fallback():
     """Off-axis should silently fall back to EATS (no error, same result)."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     P_off = {**P_FWD, "theta_v": 0.3}
     t_off = np.logspace(0, 2.5, 10) * 86400
 
@@ -172,7 +172,7 @@ def test_forward_offaxis_fallback():
 
 def test_forward_ode_spread():
     """Forward-mapping should work with ODE spreading mode."""
-    from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+    from blastwave import Jet, TopHat, ForwardJetRes
     jet = Jet(
         TopHat(P_FWD["theta_c"], P_FWD["Eiso"], lf0=P_FWD["lf"]),
         P_FWD["A"], P_FWD["n0"],
@@ -190,7 +190,7 @@ def test_forward_ode_spread():
 
 def test_forward_no_spread():
     """Forward-mapping should work with no-spread mode."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, spread=False)
     fd_fwd = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, spread=False, flux_method="forward")
 
@@ -213,7 +213,7 @@ NU_MAG = 2.4e17  # 1 keV
 
 def test_magnetar_no_regression():
     """magnetar_l0=0 must give identical results to baseline (no injection)."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     fd_base = FluxDensity_tophat(T_MAG, NU_MAG, P_MAG, spread=False, tmax=1e8)
     fd_zero = FluxDensity_tophat(T_MAG, NU_MAG, P_MAG, spread=False, tmax=1e8,
                                   magnetar_l0=0.0, magnetar_t0=1e4, magnetar_q=2.0)
@@ -223,7 +223,7 @@ def test_magnetar_no_regression():
 
 def test_magnetar_increases_late_time_flux():
     """Magnetar injection should produce higher flux than baseline at late times."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     t_late = np.geomspace(1e5, 1e7, 20)
     fd_base = FluxDensity_tophat(t_late, NU_MAG, P_MAG, spread=False, tmax=1e8)
     fd_mag = FluxDensity_tophat(t_late, NU_MAG, P_MAG, spread=False, tmax=1e8,
@@ -241,7 +241,7 @@ def test_magnetar_increases_late_time_flux():
 
 def test_magnetar_positive_and_finite():
     """Magnetar-injected flux should be positive and finite."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     fd = FluxDensity_tophat(T_MAG, NU_MAG, P_MAG, spread=False, tmax=1e8,
                              magnetar_l0=1e48, magnetar_t0=1e3, magnetar_q=2.0)
     assert fd.shape == T_MAG.shape
@@ -251,7 +251,7 @@ def test_magnetar_positive_and_finite():
 
 def test_magnetar_ode_spread():
     """Magnetar injection should work with ODE spreading mode."""
-    from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+    from blastwave import Jet, TopHat, ForwardJetRes
     t_test = np.geomspace(1e3, 1e7, 20)
 
     jet_base = Jet(
@@ -282,7 +282,7 @@ def test_magnetar_ode_spread():
 
 def test_magnetar_higher_l0_gives_more_flux():
     """Higher magnetar luminosity should produce more flux at fixed t0, q."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     t_test = np.geomspace(1e4, 1e7, 20)
     fd_low = FluxDensity_tophat(t_test, NU_MAG, P_MAG, spread=False, tmax=1e8,
                                  magnetar_l0=1e46, magnetar_t0=1e4, magnetar_q=2.0)
@@ -298,7 +298,7 @@ def test_magnetar_higher_l0_gives_more_flux():
 
 def test_magnetar_radio_band():
     """Magnetar injection should also affect radio band emission."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     nu_radio = 5e9  # 5 GHz
     t_test = np.geomspace(1e4, 1e7, 20)
     fd_base = FluxDensity_tophat(t_test, nu_radio, P_MAG, spread=False, tmax=1e8)
@@ -314,7 +314,7 @@ def test_magnetar_radio_band():
 
 def test_magnetar_pde_warning(capfd):
     """PDE mode with magnetar injection should print a warning to stderr."""
-    from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+    from blastwave import Jet, TopHat, ForwardJetRes
     Jet(
         TopHat(P_MAG["theta_c"], P_MAG["Eiso"], lf0=P_MAG["lf"]),
         P_MAG["A"], P_MAG["n0"],
@@ -329,7 +329,7 @@ def test_magnetar_pde_warning(capfd):
 
 def test_magnetar_shortcut_functions():
     """All shortcut functions should accept magnetar kwargs without error."""
-    from jetsimpy_rs import (FluxDensity_tophat, FluxDensity_gaussian,
+    from blastwave import (FluxDensity_tophat, FluxDensity_gaussian,
                               FluxDensity_powerlaw, FluxDensity_spherical)
     t_test = np.array([1e4, 1e5, 1e6])
     mag_kwargs = dict(magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0)
@@ -359,7 +359,7 @@ def test_magnetar_delayed_onset():
     1. Very late ts (1e10 s, essentially never) should match baseline.
     2. Delayed ts should give less enhancement than immediate (ts=0).
     """
-    from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+    from blastwave import Jet, TopHat, ForwardJetRes
     t_test = np.geomspace(1e3, 1e7, 20)
 
     jet_base = Jet(
@@ -398,7 +398,7 @@ def test_magnetar_delayed_onset():
 
 def test_magnetar_multi_episode():
     """Multiple injection episodes should enhance flux more than a single one."""
-    from jetsimpy_rs import Jet, TopHat, ForwardJetRes
+    from blastwave import Jet, TopHat, ForwardJetRes
     t_test = np.geomspace(1e4, 1e7, 30)
 
     # Single episode
@@ -434,7 +434,7 @@ def test_magnetar_multi_episode():
 
 def test_magnetar_ts_shortcut():
     """Shortcut functions should accept magnetar_ts parameter."""
-    from jetsimpy_rs import FluxDensity_tophat
+    from blastwave import FluxDensity_tophat
     t_test = np.geomspace(1e3, 1e7, 10)
     fd = FluxDensity_tophat(t_test, NU_MAG, P_MAG, spread=False, tmax=1e8,
                              magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0,

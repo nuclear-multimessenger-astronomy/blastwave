@@ -40,7 +40,7 @@ jobs:
       - name: Build and install PyO3 extension
         run: pip install ./rust
 
-      - name: Install jetsimpy-rs Python package
+      - name: Install blastwave Python package
         run: pip install .
 
       - name: Install original jetsimpy

@@ -5,11 +5,11 @@ Integration tests for Chang-Cooper numeric model, pair production, and EBL absor
 import numpy as np
 import pytest
 
-import jetsimpy_rs as jsr
+import blastwave as jsr
 try:
-    from jetsimpy_rs import jetsimpy_extension as _ext
+    from blastwave import blastwave_extension as _ext
 except ImportError:
-    import jetsimpy_extension as _ext
+    import blastwave_extension as _ext
 
 
 # Standard GRB afterglow parameters (spherical for speed)

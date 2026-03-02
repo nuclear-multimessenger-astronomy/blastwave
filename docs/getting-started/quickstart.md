@@ -12,7 +12,7 @@ For common jet profiles, shortcut functions handle steps 1--2 automatically:
 
 ```python
 import numpy as np
-from jetsimpy_rs import FluxDensity_tophat, FluxDensity_gaussian, FluxDensity_spherical
+from blastwave import FluxDensity_tophat, FluxDensity_gaussian, FluxDensity_spherical
 
 # Observer times and frequencies
 t = np.geomspace(1e3, 1e8, 200)  # seconds
@@ -63,8 +63,8 @@ All shortcuts accept common keyword arguments:
 For more control, use the `Jet` class:
 
 ```python
-from jetsimpy_rs import Jet, TopHat, Gaussian, Spherical
-from jetsimpy_rs import Uniform, ForwardJetRes
+from blastwave import Jet, TopHat, Gaussian, Spherical
+from blastwave import Uniform, ForwardJetRes
 
 # Create a Gaussian jet with ODE spreading
 jet = Jet(
@@ -146,7 +146,7 @@ jet = Jet(Spherical(1e49, lf0=2.0), nwind=1.0, nism=0.0, k=1.5, ...)
 ```python
 import numpy as np
 import matplotlib.pyplot as plt
-from jetsimpy_rs import FluxDensity_tophat
+from blastwave import FluxDensity_tophat
 
 P = {
     "Eiso": 1e52, "lf": 300, "theta_c": 0.1,

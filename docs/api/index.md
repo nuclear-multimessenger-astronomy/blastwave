@@ -1,6 +1,6 @@
 # API Reference
 
-## Python API (`jetsimpy_rs`)
+## Python API (`blastwave`)
 
 ### Jet profiles
 

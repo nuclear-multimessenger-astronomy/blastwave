@@ -67,7 +67,7 @@ AT2018cow's radio emission is consistent with a sub-relativistic, quasi-spherica
 ## Computing the model
 
 ```python
-from jetsimpy_rs import FluxDensity_spherical
+from blastwave import FluxDensity_spherical
 
 DAY = 86400.0
 
@@ -164,4 +164,4 @@ The wind model produces a different light curve morphology --- a broader peak at
 
 ## Full script
 
-The complete analysis script is at [`tests/at2018cow_radio.py`](https://github.com/your-repo/jetsimpy-rs/blob/main/tests/at2018cow_radio.py).
+The complete analysis script is at [`tests/at2018cow_radio.py`](https://github.com/nuclear-multimessenger-astronomy/blastwave/blob/main/tests/at2018cow_radio.py).
