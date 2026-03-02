@@ -1,4 +1,7 @@
 site_name: blastwave
+site_url: https://nuclear-multimessenger-astronomy.github.io/blastwave/
+repo_url: https://github.com/nuclear-multimessenger-astronomy/blastwave
+repo_name: blastwave
 site_description: Fast Rust GRB afterglow simulator with Python bindings
 site_author: Michael Coughlin
 
