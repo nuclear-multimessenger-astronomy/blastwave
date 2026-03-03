@@ -36,3 +36,22 @@ flux = FluxDensity_tophat(t, nu, P)
 ## Getting Started
 
 See the [Installation](getting-started/installation.md) and [Quick Start](getting-started/quickstart.md) guides.
+
+## Citation
+
+If you use blastwave in your research, please cite:
+
+```bibtex
+@software{blastwave,
+  author = {Coughlin, Michael},
+  title = {blastwave: Fast Rust GRB afterglow simulator with Python bindings},
+  url = {https://github.com/nuclear-multimessenger-astronomy/blastwave},
+}
+```
+
+blastwave builds on the following works:
+
+- Peer 2012, ApJL, 752, L8 --- hydrodynamic model
+- Sari, Piran & Narayan 1998, ApJL, 497, L17 --- synchrotron radiation
+- Margalit & Quataert 2021, ApJL, 923, L14 --- thermal synchrotron
+- Ferguson & Margalit 2025 --- full-volume post-shock extension ([GitHub](https://github.com/RossFerguson1/synchrotron_shock_model))

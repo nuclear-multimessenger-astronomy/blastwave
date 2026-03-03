@@ -95,6 +95,8 @@ impl ForwardGrid {
                     y_data[2][j][k],
                     y_data[3][j][k],
                     y_data[4][j][k],
+                    y_data[5][j][k],
+                    if y_data.len() > 6 { y_data[6][j][k] } else { 0.0 }, // t_comv
                     t_data[k],
                 ];
 

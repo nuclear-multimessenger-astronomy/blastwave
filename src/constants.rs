@@ -9,6 +9,12 @@ pub const PI: f64 = std::f64::consts::PI;
 pub const H_PLANCK: f64 = 6.626070e-27; // erg·s (Planck constant)
 pub const MAS: f64 = 1.0 / 206264806.24709466;
 
+/// Synchrotron pitch angle averaging factor: ⟨sin α⟩ × F(x)_max.
+/// ⟨sin α⟩ = π/4 for isotropic pitch angle distribution,
+/// F(x)_max = 0.92 is the peak of the single-electron synchrotron spectrum
+/// (Rybicki & Lightman 1979, §6.2).
+pub const PITCH_ANGLE_AVG: f64 = std::f64::consts::FRAC_PI_4 * 0.92;
+
 #[cfg(test)]
 mod tests {
     use super::*;

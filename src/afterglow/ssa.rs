@@ -236,7 +236,7 @@ pub fn sync_ssa(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         ShockType::Forward => {
             let e = blast.e_density;
             let b = (8.0 * PI * eps_b * e).sqrt();
-            (b, blast.n_blast, blast.t / blast.gamma, blast.gamma, blast.dr)
+            (b, blast.n_blast, blast.t_comv, blast.gamma_th, blast.dr)
         }
         ShockType::Reverse => {
             (blast.b3, blast.n3, blast.t_comv, blast.gamma_th3, blast.dr)
@@ -249,16 +249,25 @@ pub fn sync_ssa(nu: f64, p: &Dict, blast: &Blast) -> f64 {
 
     // Characteristic Lorentz factors (same as VegasAfterglow)
     let y = 0.0;
-    let gamma_m_max = compute_syn_gamma_m_max(b, y);
+    let gamma_m_max = if blast.shock_type == ShockType::Reverse && blast.gamma_M_override > 0.0 {
+        blast.gamma_M_override
+    } else {
+        compute_syn_gamma_m_max(b, y)
+    };
     let gamma_m = compute_syn_gamma_m(gamma_th, gamma_m_max, eps_e, p_val, 1.0);
-    let gamma_c = compute_gamma_c(t_comv, b, y);
+    let gamma_c = if blast.shock_type == ShockType::Reverse && blast.gamma_c_override > 0.0 {
+        blast.gamma_c_override
+    } else {
+        compute_gamma_c(t_comv, b, y)
+    };
 
     // Characteristic frequencies
     let nu_m = compute_syn_freq(gamma_m, b);
     let nu_c = compute_syn_freq(gamma_c, b);
+    let nu_M = compute_syn_freq(gamma_m_max, b);
 
     // Peak specific emissivity (same Sari 1998 formula as sync model)
-    let e_p = 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
         / MASS_E / C_SPEED / C_SPEED;
 
     // Optically thin spectrum (identical to sync model)
@@ -282,8 +291,8 @@ pub fn sync_ssa(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         }
     };
 
-    // Optically thin intensity: I_thin = j_ν × dr
-    let i_thin = emissivity * dr;
+    // Optically thin intensity with high-energy cutoff: I_thin = j_ν × exp(-ν/ν_M) × dr
+    let i_thin = emissivity * (-nu / nu_M).exp() * dr;
 
     // SSA: Rayleigh-Jeans blackbody limit
     // Effective temperature depends on electron energy at this frequency.
@@ -300,11 +309,133 @@ pub fn sync_ssa(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         return i_thin;
     }
 
-    // I_BB = 2 k T_eff (ν/c)²
-    let i_thick = 2.0 * k_t * nu * nu / (C_SPEED * C_SPEED);
+    // I_BB = 2 k T_eff (ν/c)² per steradian.
+    // Our emissivity convention is total (not per sr); the EATS integral divides
+    // by 4π later.  Scale the blackbody limit to match (total = 4π × per-sr).
+    let i_thick = 4.0 * PI * 2.0 * k_t * nu * nu / (C_SPEED * C_SPEED);
 
     // Self-absorbed intensity: min of optically thin and blackbody limit
     i_thin.min(i_thick)
+}
+
+// ---------------------------------------------------------------------------
+// Smooth power-law synchrotron with SSA
+// ---------------------------------------------------------------------------
+
+/// Synchrotron model with smooth power-law spectrum and self-absorption.
+///
+/// Uses VegasAfterglow's SmoothPowerLawSyn for the optically thin spectrum
+/// (smooth transitions at ν_m and ν_c with s=1), and a harmonic-mean
+/// smooth min for the thin-to-thick transition: I = I_thin × I_thick / (I_thin + I_thick).
+///
+/// The optically thick envelope transitions from ν² (below ν_m) to ν^(5/2)
+/// (above ν_m), matching VegasAfterglow's smooth_connect approach.
+pub fn sync_ssa_smooth(nu: f64, p: &Dict, blast: &Blast) -> f64 {
+    let eps_e = *p.get("eps_e").expect("sync_ssa_smooth requires 'eps_e'");
+    let eps_b = *p.get("eps_b").expect("sync_ssa_smooth requires 'eps_b'");
+    let p_val = *p.get("p").expect("sync_ssa_smooth requires 'p'");
+
+    let (b, n_blast, t_comv, gamma_th, dr) = match blast.shock_type {
+        ShockType::Forward => {
+            let e = blast.e_density;
+            let b = (8.0 * PI * eps_b * e).sqrt();
+            (b, blast.n_blast, blast.t_comv, blast.gamma_th, blast.dr)
+        }
+        ShockType::Reverse => {
+            (blast.b3, blast.n3, blast.t_comv, blast.gamma_th3, blast.dr)
+        }
+    };
+
+    if b <= 0.0 || n_blast <= 0.0 || dr <= 0.0 || t_comv <= 0.0 || gamma_th <= 1.0 {
+        return 0.0;
+    }
+
+    let y = 0.0;
+    let gamma_m_max = if blast.shock_type == ShockType::Reverse && blast.gamma_M_override > 0.0 {
+        blast.gamma_M_override
+    } else {
+        compute_syn_gamma_m_max(b, y)
+    };
+    let gamma_m = compute_syn_gamma_m(gamma_th, gamma_m_max, eps_e, p_val, 1.0);
+    let gamma_c = if blast.shock_type == ShockType::Reverse && blast.gamma_c_override > 0.0 {
+        blast.gamma_c_override
+    } else {
+        compute_gamma_c(t_comv, b, y)
+    };
+
+    let nu_m = compute_syn_freq(gamma_m, b);
+    let nu_c = compute_syn_freq(gamma_c, b);
+    let nu_M = compute_syn_freq(gamma_m_max, b);
+
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+        / MASS_E / C_SPEED / C_SPEED;
+
+    // Smooth power-law optically thin emissivity (s=1 transitions, factor-of-2 norm)
+    // Factored into a closure so we can evaluate at both ν and ν_a.
+    let smooth_emissivity = |freq: f64| -> f64 {
+        if nu_m < nu_c {
+            let x = freq / nu_m;
+            let xc = freq / nu_c;
+            let delta1 = (p_val - 1.0) / 2.0 + 1.0 / 3.0;
+            e_p * 2.0 * x.cbrt() / (1.0 + x.powf(delta1)) / (1.0 + xc.sqrt())
+        } else {
+            let x = freq / nu_c;
+            let xm = freq / nu_m;
+            e_p * 2.0 * x.cbrt() / (1.0 + x.powf(5.0 / 6.0)) / (1.0 + xm.powf((p_val - 1.0) / 2.0))
+        }
+    };
+
+    let emissivity = smooth_emissivity(nu);
+    let i_thin = emissivity * (-nu / nu_M).exp() * dr;
+
+    // Rayleigh-Jeans blackbody at frequency freq (total convention = 4π × per-sr).
+    let raw_thick = |freq: f64| -> f64 {
+        let g_eff = if freq <= nu_m {
+            gamma_m
+        } else {
+            compute_syn_gamma(freq, b)
+        };
+        let kt = (g_eff - 1.0).max(0.0) * MASS_E * C_SPEED * C_SPEED / 3.0;
+        4.0 * PI * 2.0 * kt * freq * freq / (C_SPEED * C_SPEED)
+    };
+
+    let i_thick_raw = raw_thick(nu);
+    if i_thick_raw <= 0.0 {
+        return i_thin;
+    }
+
+    // Compute thick_norm: normalize the thick spectrum so that at ν_a (the
+    // self-absorption frequency), the thick curve equals the smooth thin curve.
+    // This matches VegasAfterglow's log2_thick_norm_ calibration.
+    //
+    // Without this, the smooth thin spectrum (which is ~2× the sharp BPL away
+    // from spectral breaks) transitions to the un-normalized Rayleigh-Jeans at
+    // the wrong frequency, causing ~33% flux deficit in the SSA transition.
+    let i_peak_per_sr = e_p * dr / (4.0 * PI);
+    let gamma_a = compute_syn_gamma_a(b, i_peak_per_sr, gamma_m, gamma_c, gamma_m_max, p_val);
+    let nu_a = compute_syn_freq(gamma_a, b);
+
+    let thick_norm = if nu_a > 0.0 {
+        let thin_at_nu_a = smooth_emissivity(nu_a) * dr;
+        let thick_at_nu_a = raw_thick(nu_a);
+        if thick_at_nu_a > 0.0 && thin_at_nu_a > 0.0 {
+            thin_at_nu_a / thick_at_nu_a
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+
+    let i_thick = i_thick_raw * thick_norm;
+
+    // Smooth min (harmonic mean): I = I_thin × I_thick / (I_thin + I_thick)
+    // Matches VegasAfterglow's smooth_one approach.
+    let sum = i_thin + i_thick;
+    if sum <= 0.0 {
+        return 0.0;
+    }
+    i_thin * i_thick / sum
 }
 
 // ---------------------------------------------------------------------------
@@ -360,12 +491,14 @@ mod tests {
             r: 1e17,
             beta: 0.99,
             gamma: 10.0,
+            gamma_th: 10.0,
             s: 0.5,
             doppler: 5.0,
             n_blast: 1e3,
             e_density: 1e-2,
             n_ambient: 1.0,
             dr: 1e15,
+            t_comv: 1e4,
             ..Blast::default()
         };
 
@@ -396,12 +529,14 @@ mod tests {
             r: 1e17,
             beta: 0.99,
             gamma: 10.0,
+            gamma_th: 10.0,
             s: 0.5,
             doppler: 5.0,
             n_blast: 1e3,
             e_density: 1e-2,
             n_ambient: 1.0,
             dr: 1e15,
+            t_comv: 1e4,
             ..Blast::default()
         };
 
@@ -424,6 +559,76 @@ mod tests {
             f_ssa_r < f_sync_r,
             "SSA should suppress radio: sync={:.6e}, ssa={:.6e}",
             f_sync_r, f_ssa_r
+        );
+    }
+
+    #[test]
+    fn test_sync_ssa_smooth_positive() {
+        let mut p = Dict::new();
+        p.insert("eps_e".into(), 0.1);
+        p.insert("eps_b".into(), 0.01);
+        p.insert("p".into(), 2.17);
+
+        let blast = Blast {
+            t: 1e5,
+            theta: 0.05,
+            phi: 0.0,
+            r: 1e17,
+            beta: 0.99,
+            gamma: 10.0,
+            gamma_th: 10.0,
+            s: 0.5,
+            doppler: 5.0,
+            n_blast: 1e3,
+            e_density: 1e-2,
+            n_ambient: 1.0,
+            dr: 1e15,
+            t_comv: 1e4,
+            ..Blast::default()
+        };
+
+        let flux = sync_ssa_smooth(1e14, &p, &blast);
+        assert!(flux > 0.0);
+        assert!(flux.is_finite());
+    }
+
+    #[test]
+    fn test_sync_ssa_smooth_matches_smooth_at_xray() {
+        use crate::afterglow::models::sync_smooth;
+
+        let mut p = Dict::new();
+        p.insert("eps_e".into(), 0.1);
+        p.insert("eps_b".into(), 0.01);
+        p.insert("p".into(), 2.17);
+
+        let blast = Blast {
+            t: 1e5,
+            theta: 0.05,
+            phi: 0.0,
+            r: 1e17,
+            beta: 0.99,
+            gamma: 10.0,
+            gamma_th: 10.0,
+            s: 0.5,
+            doppler: 5.0,
+            n_blast: 1e3,
+            e_density: 1e-2,
+            n_ambient: 1.0,
+            dr: 1e15,
+            t_comv: 1e4,
+            ..Blast::default()
+        };
+
+        // At X-ray, SSA should NOT affect the result
+        let nu_xray = 1e18;
+        let f_smooth = sync_smooth(nu_xray, &p, &blast);
+        let f_ssa_smooth = sync_ssa_smooth(nu_xray, &p, &blast);
+        let ratio = f_ssa_smooth / f_smooth;
+        // Harmonic mean: a*b/(a+b) ≈ a when a << b, so ratio should be close to 1
+        assert!(
+            ratio > 0.9 && ratio <= 1.0 + 1e-10,
+            "sync_ssa_smooth should match sync_smooth at X-ray, but ratio = {:.6e}",
+            ratio
         );
     }
 

@@ -49,8 +49,6 @@ The light curves show a characteristic rise--peak--decline shape: the rise is dr
 
 AT2018cow's radio emission is consistent with a sub-relativistic, quasi-spherical outflow:
 
-| Parameter | Value | Notes |
-|-----------|-------|-------|
 | Parameter | ISM model | Wind model | Notes |
 |-----------|-----------|------------|-------|
 | \(E_k\) | \(2 \times 10^{49}\) erg | \(5 \times 10^{49}\) erg | Kinetic energy |

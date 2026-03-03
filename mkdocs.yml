@@ -48,7 +48,11 @@ nav:
     - AT2018cow Radio: examples/at2018cow.md
     - AT2022cmc Radio: examples/at2022cmc.md
     - GRB 200826A: examples/grb200826a.md
+    - GW170817: examples/gw170817.md
+    - Reverse Shock: examples/reverse_shock.md
+    - Numeric Model: examples/numeric_comparison.md
     - Physics Showcase: examples/grb_afterglow.md
+  - Benchmarks: benchmarks.md
   - API Reference:
     - Overview: api/index.md
     - Numeric Model: api/numeric.md

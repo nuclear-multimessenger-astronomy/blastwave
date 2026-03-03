@@ -468,10 +468,7 @@ pub fn sync_numeric(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         ShockType::Forward => {
             let e = blast.e_density;
             let b = (8.0 * PI * eps_b * e).sqrt();
-            let gamma = blast.gamma;
-            let t = blast.t;
-            let t_comv = t / gamma; // approximate comoving time
-            (b, blast.n_blast, gamma, t_comv, blast.dr)
+            (b, blast.n_blast, blast.gamma_th, blast.t_comv, blast.dr)
         }
         ShockType::Reverse => {
             if blast.b3 <= 0.0 || blast.n3 <= 0.0 || blast.gamma_th3 <= 1.0 || blast.t_comv <= 0.0 {
@@ -655,6 +652,7 @@ mod tests {
             pressure: 1e-3,
             n_ambient: 1.0,
             dr: 1e15,
+            t_comv: 1e4,
             ..Blast::default()
         };
 

@@ -30,12 +30,20 @@ pub struct JetConfig {
     pub theta_c: f64,
     pub cal_level: i32,
 
+    // Forward shock microphysics (affects thermal energy budget)
+    pub eps_e: f64,               // electron energy fraction (forward shock); 0 = no correction
+    pub eps_b: f64,               // magnetic energy fraction (forward shock); 0 = no eps_rad correction
+    pub p_fwd: f64,               // electron spectral index (forward shock); used for eps_rad
+
     // Reverse shock parameters
     pub include_reverse_shock: bool,
     pub sigma: f64,           // magnetization parameter (0 = unmagnetized)
     pub eps_e_rs: f64,        // electron energy fraction (reverse shock)
     pub eps_b_rs: f64,        // magnetic field energy fraction (reverse shock)
     pub p_rs: f64,            // electron spectral index (reverse shock)
+
+    // Engine duration (controls shell thickness for reverse shock)
+    pub duration: f64,        // central engine duration [s] (0 = thin shell, uses tmin)
 
     // Energy injection parameters (reverse shock)
     pub t0_injection: f64,    // characteristic injection time (0 = no injection)
@@ -71,11 +79,15 @@ impl Default for JetConfig {
             spread_mode: SpreadMode::Pde,
             theta_c: 0.1,
             cal_level: 1,
+            eps_e: 0.0,
+            eps_b: 0.0,
+            p_fwd: 2.3,
             include_reverse_shock: false,
             sigma: 0.0,
             eps_e_rs: 0.1,
             eps_b_rs: 0.01,
             p_rs: 2.3,
+            duration: 0.0,
             t0_injection: 0.0,
             l_injection: 0.0,
             m_dot_injection: 0.0,

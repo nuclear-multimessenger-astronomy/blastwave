@@ -284,7 +284,7 @@ pub fn sync_ssc(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         ShockType::Forward => {
             let e = blast.e_density;
             let b = (8.0 * PI * eps_b * e).sqrt();
-            (b, blast.n_blast, blast.t / blast.gamma, blast.gamma, blast.dr)
+            (b, blast.n_blast, blast.t_comv, blast.gamma_th, blast.dr)
         }
         ShockType::Reverse => {
             (blast.b3, blast.n3, blast.t_comv, blast.gamma_th3, blast.dr)
@@ -309,7 +309,7 @@ pub fn sync_ssc(nu: f64, p: &Dict, blast: &Blast) -> f64 {
     // Compute synchrotron spectrum with IC-corrected γ_c
     let nu_m = ssa::compute_syn_freq(gamma_m, b);
     let nu_c = ssa::compute_syn_freq(gamma_c, b);
-    let e_p = 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
         / MASS_E / C_SPEED / C_SPEED;
 
     let syn_emissivity = if nu_m < nu_c {
@@ -417,9 +417,11 @@ mod tests {
         let blast = Blast {
             t: 1e5,
             gamma: 10.0,
+            gamma_th: 10.0,
             n_blast: 1e3,
             e_density: 1e-2,
             dr: 1e15,
+            t_comv: 1e4,
             ..Blast::default()
         };
 

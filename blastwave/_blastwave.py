@@ -27,11 +27,15 @@ class Jet:
         cal_level=1,          # [calibration level]: 0: no calibration. 1: BM all time. 2: smoothly go from BM to ST (ST is dangerous)
         rtol=1e-6,            # [primitive variable solver tolerance]: Don't change it unless you know what is going on.
         cfl=0.9,              # [cfl number]: Don't change it unless you know what is going on.
+        eps_e=0.0,            # [FS electron energy fraction for thermal energy budget]: 0 = no correction (legacy)
+        eps_b=0.0,            # [FS magnetic energy fraction for eps_rad]: 0 = no eps_rad correction
+        p_fwd=2.3,            # [FS electron spectral index for eps_rad]
         include_reverse_shock=False,  # [reverse shock]: include reverse shock dynamics and emission
         sigma=0.0,            # [magnetization]: ejecta magnetization parameter
         eps_e_rs=0.1,         # [RS electron energy fraction]
         eps_b_rs=0.01,        # [RS magnetic energy fraction]
         p_rs=2.3,             # [RS electron spectral index]
+        duration=0.0,         # [engine duration]: (s) central engine activity time; controls shell thickness for RS
         t0_injection=0.0,     # [energy injection timescale]: (s)
         l_injection=0.0,      # [energy injection luminosity]: (erg/s)
         m_dot_injection=0.0,  # [mass injection rate]: (g/s)
@@ -57,11 +61,15 @@ class Jet:
         self.spread_mode = spread_mode
         self.k = k
         self.cal_level = cal_level
+        self.eps_e = eps_e
+        self.eps_b = eps_b
+        self.p_fwd = p_fwd
         self.include_reverse_shock = include_reverse_shock
         self.sigma = sigma
         self.eps_e_rs = eps_e_rs
         self.eps_b_rs = eps_b_rs
         self.p_rs = p_rs
+        self.duration = duration
         self.t0_injection = t0_injection
         self.l_injection = l_injection
         self.m_dot_injection = m_dot_injection
@@ -321,11 +329,15 @@ class Jet:
             jet_config.spread_mode = "pde" if self.spread else "none"
             jet_config.spread = self.spread
         jet_config.cal_level = self.cal_level
+        jet_config.eps_e = self.eps_e
+        jet_config.eps_b = self.eps_b
+        jet_config.p_fwd = self.p_fwd
         jet_config.include_reverse_shock = self.include_reverse_shock
         jet_config.sigma = self.sigma
         jet_config.eps_e_rs = self.eps_e_rs
         jet_config.eps_b_rs = self.eps_b_rs
         jet_config.p_rs = self.p_rs
+        jet_config.duration = self.duration
         jet_config.t0_injection = self.t0_injection
         jet_config.l_injection = self.l_injection
         jet_config.m_dot_injection = self.m_dot_injection

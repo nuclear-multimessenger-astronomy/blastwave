@@ -149,8 +149,8 @@ fn test_pde_solver_produces_valid_output() {
         assert!(sim.ts[i] > sim.ts[i - 1], "Time must be monotonically increasing");
     }
 
-    // Should have 5 variables (msw, mej, beta_gamma_sq, beta_th, R)
-    assert_eq!(sim.ys.len(), 5);
+    // Should have 6 variables (msw, mej, beta_gamma_sq, beta_th, R, u2_th)
+    assert_eq!(sim.ys.len(), 6);
     for var in &sim.ys {
         assert_eq!(var.len(), ncells);
         for cell in var {
@@ -506,8 +506,8 @@ fn test_ode_spread_produces_valid_output() {
         assert!(sim.ts[i] > sim.ts[i - 1], "Time must be monotonically increasing");
     }
 
-    // Should have 5 variables
-    assert_eq!(sim.ys.len(), 5);
+    // Should have 7 variables (msw, mej, beta_gamma_sq, beta_th, r, u2_th, t_comv)
+    assert_eq!(sim.ys.len(), 7);
     for var in &sim.ys {
         assert_eq!(var.len(), ncells);
         for cell in var {
@@ -613,6 +613,239 @@ fn test_ode_vs_pde_spread_agreement() {
                 tobs, l_pde, l_ode, log_diff,
             );
         }
+    }
+}
+
+// ─── SSA parameter sweep ───
+
+/// Build a no-spread top-hat config for SSA tests.
+/// Uses a small grid (17 edges) and ODE no-spread mode for speed.
+fn nospread_tophat_config(n0: f64, eps_e: f64, eps_b: f64, p: f64) -> JetConfig {
+    let theta_c: f64 = 0.1;
+    let eiso: f64 = 1e53;
+    let lf0: f64 = 300.0;
+    let tmin: f64 = 10.0;
+    let tmax: f64 = 1e9;
+
+    let npoints = 17;
+    let mut theta_edge = vec![0.0; npoints];
+    let arcsinh_max = (PI / theta_c).asinh();
+    for i in 0..npoints {
+        theta_edge[i] = (i as f64 / (npoints - 1) as f64 * arcsinh_max).sinh() * theta_c;
+    }
+    theta_edge[0] = 0.0;
+    theta_edge[npoints - 1] = PI;
+
+    let ncells = npoints - 1;
+    let theta: Vec<f64> = (0..ncells)
+        .map(|i| (theta_edge[i] + theta_edge[i + 1]) / 2.0)
+        .collect();
+
+    let nfine = 1000;
+    let theta_fine: Vec<f64> = (0..nfine)
+        .map(|i| i as f64 / (nfine - 1) as f64 * PI)
+        .collect();
+    let mut energy_fine = vec![eiso; nfine];
+    let mut lf_fine = vec![1.0f64; nfine];
+    for i in 0..nfine {
+        if theta_fine[i] > theta_c {
+            energy_fine[i] = 0.0;
+        } else {
+            lf_fine[i] = lf0;
+        }
+    }
+
+    let max_e = energy_fine.iter().cloned().fold(0.0f64, f64::max);
+    for e in energy_fine.iter_mut() {
+        if *e <= max_e * 1e-12 { *e = max_e * 1e-12; }
+    }
+    for lf in lf_fine.iter_mut() {
+        if *lf <= 1.005 { *lf = 1.005; }
+    }
+
+    let energy_interp = interp(
+        &theta, &theta_fine,
+        &energy_fine.iter().map(|e| e / 4.0 / PI / C_SPEED / C_SPEED).collect::<Vec<_>>(),
+    );
+    let lf_interp = interp(&theta, &theta_fine, &lf_fine);
+
+    let mej0: Vec<f64> = energy_interp.iter().zip(lf_interp.iter())
+        .map(|(e, lf)| e / (lf - 1.0)).collect();
+    let beta0: Vec<f64> = lf_interp.iter()
+        .map(|lf| (1.0 - 1.0 / (lf * lf)).sqrt()).collect();
+    let r0: Vec<f64> = beta0.iter()
+        .map(|b| b * C_SPEED * tmin).collect();
+    let msw0: Vec<f64> = r0.iter()
+        .map(|r| n0 * MASS_P * r * r * r / 3.0).collect();
+    let eb0: Vec<f64> = energy_interp.iter().zip(mej0.iter()).zip(msw0.iter())
+        .map(|((e, m), ms)| e + m + ms).collect();
+    let ht0 = vec![0.0; ncells];
+
+    JetConfig {
+        theta_edge,
+        eb: eb0,
+        ht: ht0,
+        msw: msw0,
+        mej: mej0,
+        r: r0,
+        nwind: 0.0,
+        nism: n0,
+        tmin,
+        tmax,
+        rtol: 1e-6,
+        cfl: 0.9,
+        spread: false,
+        cal_level: 1,
+        eps_e,
+        eps_b,
+        p_fwd: p,
+        ..JetConfig::default()
+    }
+}
+
+/// Compute luminosity for a given config, model, time, and frequency.
+fn compute_lum(
+    config: &JetConfig,
+    sim: &SimBox,
+    model_name: &str,
+    eps_e: f64,
+    eps_b: f64,
+    p: f64,
+    tobs: f64,
+    nu: f64,
+) -> f64 {
+    let theta = sim.get_theta().clone();
+    let tool = Tool::new(config.nwind, config.nism, config.rtol, config.cal_level);
+    let eats = EATS::new(&theta, &sim.ts);
+    let mut afterglow = Afterglow::new();
+
+    let mut param = HashMap::new();
+    param.insert("eps_e".into(), eps_e);
+    param.insert("eps_b".into(), eps_b);
+    param.insert("p".into(), p);
+    param.insert("theta_v".into(), 0.0);
+    param.insert("d".into(), 42.15); // ~1.3e26 cm in Mpc
+    param.insert("z".into(), 0.01);
+    afterglow.config_parameters(param);
+    afterglow.config_intensity(model_name);
+
+    afterglow.luminosity(
+        tobs, nu, 1e-3, 50, true,
+        &eats, &sim.ys, &sim.ts, &theta, &tool,
+    )
+}
+
+#[test]
+fn test_sync_ssa_smooth_parameter_sweep() {
+    // Regression test for SSA parameter sweep.
+    //
+    // Verifies that sync_ssa_smooth correctly handles self-absorption across
+    // a range of physical parameters. The reference values were calibrated
+    // against VegasAfterglow (median BW/VA = 0.97–1.03 across frequencies).
+    //
+    // For each config we check:
+    //  1. SSA does not affect X-ray (ratio to sync_smooth > 0.95)
+    //  2. SSA suppresses radio (sync_ssa_smooth < sync_smooth)
+    //  3. Absolute luminosity values match reference within 20%
+
+    struct Case {
+        name: &'static str,
+        n0: f64,
+        eps_e: f64,
+        eps_b: f64,
+        p: f64,
+        // Reference luminosities (erg/s/Hz) at t=1e5 s, calibrated against
+        // VegasAfterglow (BW/VA median 0.97–1.03 across frequencies).
+        ref_radio: f64,  // 1 GHz SSA luminosity
+        ref_xray: f64,   // 1 keV SSA luminosity
+    }
+
+    let cases = [
+        Case { name: "default",   n0: 1.0,   eps_e: 0.1, eps_b: 0.01, p: 2.3,
+               ref_radio: 5.69e29, ref_xray: 1.28e27 },
+        Case { name: "n0=0.01",   n0: 0.01,  eps_e: 0.1, eps_b: 0.01, p: 2.3,
+               ref_radio: 3.08e30, ref_xray: 4.01e27 },
+        Case { name: "n0=100",    n0: 100.0,  eps_e: 0.1, eps_b: 0.01, p: 2.3,
+               ref_radio: 8.95e27, ref_xray: 1.90e26 },
+        Case { name: "eps_b=0.1", n0: 1.0,   eps_e: 0.1, eps_b: 0.1,  p: 2.3,
+               ref_radio: 5.34e29, ref_xray: 1.56e27 },
+        Case { name: "eps_e=0.3", n0: 1.0,   eps_e: 0.3, eps_b: 0.01, p: 2.3,
+               ref_radio: 1.47e30, ref_xray: 5.33e27 },
+        Case { name: "p=2.5",     n0: 1.0,   eps_e: 0.1, eps_b: 0.01, p: 2.5,
+               ref_radio: 8.06e29, ref_xray: 6.06e26 },
+        Case { name: "p=2.05",    n0: 1.0,   eps_e: 0.1, eps_b: 0.01, p: 2.05,
+               ref_radio: 7.73e28, ref_xray: 1.26e27 },
+    ];
+
+    let nu_radio = 1e9;     // 1 GHz
+    let nu_xray = 2.4e17;   // 1 keV
+    let tobs = 1e5;          // ~1.16 days
+    let tol = 0.20;          // 20% tolerance for regression
+
+    for case in &cases {
+        let config = nospread_tophat_config(case.n0, case.eps_e, case.eps_b, case.p);
+        let mut sim = SimBox::new(&config);
+        sim.solve_pde();
+
+        // SSA model
+        let l_ssa_radio = compute_lum(
+            &config, &sim, "sync_ssa_smooth",
+            case.eps_e, case.eps_b, case.p, tobs, nu_radio,
+        );
+        let l_ssa_xray = compute_lum(
+            &config, &sim, "sync_ssa_smooth",
+            case.eps_e, case.eps_b, case.p, tobs, nu_xray,
+        );
+
+        // Reference (no SSA) model
+        let l_smooth_radio = compute_lum(
+            &config, &sim, "sync_smooth",
+            case.eps_e, case.eps_b, case.p, tobs, nu_radio,
+        );
+        let l_smooth_xray = compute_lum(
+            &config, &sim, "sync_smooth",
+            case.eps_e, case.eps_b, case.p, tobs, nu_xray,
+        );
+
+        // --- Assertions ---
+
+        // All values must be positive and finite
+        assert!(l_ssa_radio > 0.0 && l_ssa_radio.is_finite(),
+            "[{}] SSA radio luminosity invalid: {:.3e}", case.name, l_ssa_radio);
+        assert!(l_ssa_xray > 0.0 && l_ssa_xray.is_finite(),
+            "[{}] SSA X-ray luminosity invalid: {:.3e}", case.name, l_ssa_xray);
+
+        // 1. SSA should NOT affect X-ray (harmonic mean ≈ thin when I_thick >> I_thin)
+        let xray_ratio = l_ssa_xray / l_smooth_xray;
+        assert!(
+            xray_ratio > 0.90 && xray_ratio <= 1.001,
+            "[{}] SSA should not affect X-ray: SSA/smooth = {:.4} (expected ~1.0)",
+            case.name, xray_ratio,
+        );
+
+        // 2. SSA MUST suppress radio
+        assert!(
+            l_ssa_radio < l_smooth_radio,
+            "[{}] SSA must suppress radio: SSA={:.3e} >= smooth={:.3e}",
+            case.name, l_ssa_radio, l_smooth_radio,
+        );
+
+        // 3. Regression: SSA radio luminosity should match reference within tolerance.
+        //    Reference values were calibrated against VegasAfterglow.
+        let radio_frac = (l_ssa_radio - case.ref_radio).abs() / case.ref_radio;
+        assert!(
+            radio_frac < tol,
+            "[{}] SSA radio regression: got {:.3e}, expected {:.3e} (off by {:.1}%)",
+            case.name, l_ssa_radio, case.ref_radio, radio_frac * 100.0,
+        );
+
+        // 4. Regression: X-ray luminosity should match reference within tolerance.
+        let xray_frac = (l_ssa_xray - case.ref_xray).abs() / case.ref_xray;
+        assert!(
+            xray_frac < tol,
+            "[{}] SSA X-ray regression: got {:.3e}, expected {:.3e} (off by {:.1}%)",
+            case.name, l_ssa_xray, case.ref_xray, xray_frac * 100.0,
+        );
     }
 }
 

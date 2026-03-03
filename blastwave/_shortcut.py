@@ -8,7 +8,7 @@ def FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1,
     if include_rs:
         rs_kwargs["include_reverse_shock"] = True
         if rs_params:
-            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "t0_injection", "l_injection", "m_dot_injection"):
+            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "duration", "t0_injection", "l_injection", "m_dot_injection"):
                 if key in rs_params:
                     rs_kwargs[key] = rs_params[key]
 
@@ -25,6 +25,9 @@ def FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1,
         cal_level=cal_level,                   # [calibration level]: 0: no calibration. 1: BM all time. 2: smoothly go from BM to ST (dangerous)
         rtol=1e-6,                     # [primitive variable solver tolerance]: Don't change it unless you know what is going on.
         cfl=cfl,                       # [cfl number]: Don't change it unless you know what is going on.
+        eps_e=P.get("eps_e", 0.0),
+        eps_b=P.get("eps_b", 0.0),
+        p_fwd=P.get("p", 2.3),
         magnetar_l0=magnetar_l0,
         magnetar_t0=magnetar_t0,
         magnetar_q=magnetar_q,
@@ -53,7 +56,7 @@ def FluxDensity_gaussian(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=
     if include_rs:
         rs_kwargs["include_reverse_shock"] = True
         if rs_params:
-            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "t0_injection", "l_injection", "m_dot_injection"):
+            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "duration", "t0_injection", "l_injection", "m_dot_injection"):
                 if key in rs_params:
                     rs_kwargs[key] = rs_params[key]
 
@@ -70,6 +73,9 @@ def FluxDensity_gaussian(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=
         cal_level=cal_level,                   # [calibration level]: 0: no calibration. 1: BM all time. 2: smoothly go from BM to ST (dangerous)
         rtol=1e-6,                     # [primitive variable solver tolerance]: Don't change it unless you know what is going on.
         cfl=cfl,                       # [cfl number]: Don't change it unless you know what is going on.
+        eps_e=P.get("eps_e", 0.0),
+        eps_b=P.get("eps_b", 0.0),
+        p_fwd=P.get("p", 2.3),
         magnetar_l0=magnetar_l0,
         magnetar_t0=magnetar_t0,
         magnetar_q=magnetar_q,
@@ -98,7 +104,7 @@ def FluxDensity_spherical(t, nu, P, k=2.0, tmin=10.0, tmax=1e10, ntheta=17, cal_
     if include_rs:
         rs_kwargs["include_reverse_shock"] = True
         if rs_params:
-            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "t0_injection", "l_injection", "m_dot_injection"):
+            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "duration", "t0_injection", "l_injection", "m_dot_injection"):
                 if key in rs_params:
                     rs_kwargs[key] = rs_params[key]
 
@@ -116,6 +122,9 @@ def FluxDensity_spherical(t, nu, P, k=2.0, tmin=10.0, tmax=1e10, ntheta=17, cal_
         k=k,
         cal_level=cal_level,
         rtol=1e-6,
+        eps_e=P.get("eps_e", 0.0),
+        eps_b=P.get("eps_b", 0.0),
+        p_fwd=P.get("p", 2.3),
         magnetar_l0=magnetar_l0,
         magnetar_t0=magnetar_t0,
         magnetar_q=magnetar_q,
@@ -144,7 +153,7 @@ def FluxDensity_powerlaw(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=
     if include_rs:
         rs_kwargs["include_reverse_shock"] = True
         if rs_params:
-            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "t0_injection", "l_injection", "m_dot_injection"):
+            for key in ("sigma", "eps_e_rs", "eps_b_rs", "p_rs", "duration", "t0_injection", "l_injection", "m_dot_injection"):
                 if key in rs_params:
                     rs_kwargs[key] = rs_params[key]
 
@@ -161,6 +170,9 @@ def FluxDensity_powerlaw(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=
         cal_level=cal_level,                   # [calibration level]: 0: no calibration. 1: BM all time. 2: smoothly go from BM to ST (dangerous)
         rtol=1e-6,                     # [primitive variable solver tolerance]: Don't change it unless you know what is going on.
         cfl=cfl,                       # [cfl number]: Don't change it unless you know what is going on.
+        eps_e=P.get("eps_e", 0.0),
+        eps_b=P.get("eps_b", 0.0),
+        p_fwd=P.get("p", 2.3),
         magnetar_l0=magnetar_l0,
         magnetar_t0=magnetar_t0,
         magnetar_q=magnetar_q,

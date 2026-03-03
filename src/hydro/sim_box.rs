@@ -3,6 +3,8 @@ use crate::hydro::config::{JetConfig, SpreadMode};
 use crate::hydro::tools::Tool;
 use crate::hydro::reverse_shock::{self, FRShockEqn, NVAR_RS};
 
+const C2: f64 = C_SPEED * C_SPEED;
+
 /// PDE solver for jet hydrodynamics.
 pub struct SimBox {
     // tools
@@ -27,6 +29,7 @@ pub struct SimBox {
     msw: Vec<f64>,
     mej: Vec<f64>,
     r: Vec<f64>,
+    u2_th: Vec<f64>,
 
     // primitive variables
     beta_gamma_sq: Vec<f64>,
@@ -71,6 +74,14 @@ pub struct SimBox {
     include_reverse_shock: bool,
     config_rs: Option<JetConfig>,
 
+    // Forward shock microphysics
+    eps_e: f64,  // electron energy fraction (affects thermal energy budget)
+    eps_b: f64,  // magnetic energy fraction (for eps_rad computation)
+    p_fwd: f64,  // electron spectral index (for eps_rad computation)
+    // Pre-computed eps_rad coefficients (matching VegasAfterglow)
+    gamma_m_coeff: f64, // (p-2)/(p-1) * eps_e * mp/me
+    gamma_c_coeff: f64, // 6π * me * c / (σ_T * eps_b)
+
     // Forward shock energy injection (magnetar spin-down, multiple episodes)
     // Each element: (l0_per_sr_c2, t0, q, ts)
     magnetar_episodes: Vec<(f64, f64, f64, f64)>,
@@ -102,6 +113,7 @@ impl SimBox {
             msw: config.msw.clone(),
             mej: config.mej.clone(),
             r: config.r.clone(),
+            u2_th: vec![0.0; ntheta],
             beta_gamma_sq: vec![0.0; ntheta],
             beta_th: vec![0.0; ntheta],
             psw: vec![0.0; ntheta],
@@ -111,19 +123,28 @@ impl SimBox {
             gamma: vec![0.0; ntheta],
             eigenvalues: vec![0.0; ntheta],
             alpha_r: vec![0.0; ntheta],
-            slope: vec![vec![0.0; ntheta]; 5],
+            slope: vec![vec![0.0; ntheta]; 6],
             r_slope_l: vec![0.0; ntheta],
             r_slope_r: vec![0.0; ntheta],
-            numerical_flux: vec![vec![0.0; ntheta + 1]; 4],
+            numerical_flux: vec![vec![0.0; ntheta + 1]; 5],
             dr_dt: vec![0.0; ntheta],
-            dy_dt: vec![vec![0.0; ntheta]; 5],
-            rk2_scratch: vec![vec![0.0; ntheta]; 5],
+            dy_dt: vec![vec![0.0; ntheta]; 6],
+            rk2_scratch: vec![vec![0.0; ntheta]; 6],
             ys: Vec::new(),
             ts: Vec::new(),
             ys_rs: None,
             crossing_idx: Vec::new(),
             include_reverse_shock: config.include_reverse_shock,
             config_rs: if config.include_reverse_shock { Some(config.clone()) } else { None },
+            eps_e: config.eps_e,
+            eps_b: config.eps_b,
+            p_fwd: config.p_fwd,
+            gamma_m_coeff: if config.eps_e > 0.0 && config.p_fwd > 2.0 {
+                (config.p_fwd - 2.0) / (config.p_fwd - 1.0) * config.eps_e * MASS_P / MASS_E
+            } else { 0.0 },
+            gamma_c_coeff: if config.eps_b > 0.0 {
+                6.0 * PI * MASS_E * C_SPEED / (SIGMA_T * config.eps_b)
+            } else { 0.0 },
             magnetar_episodes: config.magnetar_l0.iter().enumerate().map(|(i, &l0)| {
                 let t0 = config.magnetar_t0.get(i).copied().unwrap_or(1.0);
                 let q = config.magnetar_q.get(i).copied().unwrap_or(2.0);
@@ -134,6 +155,10 @@ impl SimBox {
 
         sb.solve_primitive();
         sb.solve_eigen();
+        let one_minus_eps_e = 1.0 - sb.eps_e;
+        for i in 0..ntheta {
+            sb.u2_th[i] = one_minus_eps_e * (sb.gamma[i] - 1.0) * sb.msw[i] * C2;
+        }
         sb
     }
 
@@ -159,6 +184,7 @@ impl SimBox {
         // Solve reverse shock if enabled
         if self.include_reverse_shock {
             self.solve_reverse_shock();
+            self.apply_rs_energy_correction();
         }
     }
 
@@ -206,6 +232,7 @@ impl SimBox {
                 config.eps_e_rs,
                 config.eps_b_rs,
                 config.p_rs,
+                config.duration,
                 config.t0_injection,
                 config.l_injection,
                 config.m_dot_injection,
@@ -228,8 +255,78 @@ impl SimBox {
             }
         }
 
+        // Post-process: fill rs_data[13] with the crossing lab time for each theta cell.
+        // This lets the EATS solver know when the RS finished crossing the ejecta.
+        // Use a very large but finite sentinel (1e30) for cells that never cross,
+        // so that t > t_crossing is never satisfied and RS data stays finite.
+        for j in 0..ntheta {
+            let cidx = crossing_indices[j];
+            let t_cross = if cidx < nt {
+                self.ts[cidx]
+            } else {
+                1e30 // sentinel: no crossing
+            };
+            for k in 0..rs_data[13][j].len() {
+                rs_data[13][j][k] = t_cross;
+            }
+        }
+
         self.ys_rs = Some(rs_data);
         self.crossing_idx = crossing_indices;
+    }
+
+    /// Post-processing correction: subtract RS thermal energy from the FS
+    /// blast energy and re-solve for the corrected beta_gamma_sq.
+    ///
+    /// The PDE doesn't account for energy drained by the reverse shock, so
+    /// FS Gamma is too high during the crossing phase. This corrects by
+    /// saying "FS energy = total blast energy − RS thermal energy" and
+    /// re-solving the energy equation for the new Gamma.
+    fn apply_rs_energy_correction(&mut self) {
+        let rs_data = self.ys_rs.as_ref().unwrap();
+        let nt = self.ts.len();
+        let c2 = C_SPEED * C_SPEED;
+
+        for j in 0..self.ntheta {
+            for k in 0..nt {
+                let u3_th = rs_data[4][j][k]; // RS thermal energy per sr [erg/sr]
+                if u3_th <= 0.0 {
+                    continue;
+                }
+
+                // Convert u3_th from erg/sr to g/sr (same units as eb)
+                let u3_th_mass = u3_th / c2;
+
+                // Reconstruct eb from stored primitives
+                let msw = self.ys[0][j][k];
+                let mej = self.ys[1][j][k];
+                let bg2 = self.ys[2][j][k];
+                let r = self.ys[4][j][k];
+
+                let s = self.tool.solve_s(r, bg2);
+                let gamma = (bg2 + 1.0).sqrt();
+                let beta_sq = bg2 / (bg2 + 1.0);
+                let eb = s * gamma * gamma * (1.0 + beta_sq * beta_sq / 3.0) * msw
+                    + gamma * ((1.0 - s) * msw + mej);
+
+                // Subtract RS thermal energy
+                let eb_corr = eb - u3_th_mass;
+                if eb_corr <= mej + msw {
+                    // Corrected energy must exceed rest mass
+                    continue;
+                }
+
+                // Re-solve for beta_gamma_sq with corrected energy
+                if let Ok(bg2_new) =
+                    self.tool
+                        .solve_beta_gamma_sq(msw / eb_corr, mej / eb_corr, r)
+                {
+                    if bg2_new < bg2 && bg2_new > 0.0 {
+                        self.ys[2][j][k] = bg2_new;
+                    }
+                }
+            }
+        }
     }
 
     fn solve_primitive(&mut self) {
@@ -274,8 +371,8 @@ impl SimBox {
     }
 
     fn solve_slope(&mut self) {
-        // For msw, mej, beta_gamma_sq, beta_th (indices 0..4)
-        for j in 0..4usize {
+        // For msw, mej, beta_gamma_sq, beta_th, u2_th (indices 0..5)
+        for j in 0..5usize {
             for i in 0..self.ntheta {
                 let index1 = if i > 0 { i - 1 } else { 0 };
                 let index2 = if i < self.ntheta - 1 { i + 1 } else { self.ntheta - 1 };
@@ -285,6 +382,7 @@ impl SimBox {
                     1 => &self.mej,
                     2 => &self.beta_gamma_sq,
                     3 => &self.beta_th,
+                    4 => &self.u2_th,
                     _ => unreachable!(),
                 };
 
@@ -320,25 +418,27 @@ impl SimBox {
             } else {
                 diff2 / (self.theta[index2] - self.theta[i])
             };
-            self.slope[4][i] = self.tool.minmod(self.r_slope_l[i], self.r_slope_r[i]);
+            self.slope[5][i] = self.tool.minmod(self.r_slope_l[i], self.r_slope_r[i]);
         }
     }
 
     fn solve_numerical_flux(&mut self) {
         for i in 1..self.ntheta {
             // Reconstruct primitive variables at face i
-            let vars: [&Vec<f64>; 5] = [
+            // slope indices: 0=msw, 1=mej, 2=bg_sq, 3=beta_th, 4=u2_th, 5=r
+            let vars: [&Vec<f64>; 6] = [
                 &self.msw,
                 &self.mej,
                 &self.beta_gamma_sq,
                 &self.beta_th,
+                &self.u2_th,
                 &self.r,
             ];
 
-            let mut var_l = [0.0f64; 5];
-            let mut var_r = [0.0f64; 5];
+            let mut var_l = [0.0f64; 6];
+            let mut var_r = [0.0f64; 6];
 
-            for j in 0..5 {
+            for j in 0..6 {
                 var_l[j] =
                     vars[j][i - 1] + self.slope[j][i - 1] * (self.theta_edge[i] - self.theta[i - 1]);
                 var_r[j] = vars[j][i] + self.slope[j][i] * (self.theta_edge[i] - self.theta[i]);
@@ -349,13 +449,15 @@ impl SimBox {
             let mej_l = var_l[1];
             let bg_sq_l = var_l[2];
             let bt_l = var_l[3];
-            let r_l = var_l[4];
+            let u2th_l = var_l[4];
+            let r_l = var_l[5];
 
             let msw_r = var_r[0];
             let mej_r = var_r[1];
             let bg_sq_r = var_r[2];
             let bt_r = var_r[3];
-            let r_r = var_r[4];
+            let u2th_r = var_r[4];
+            let r_r = var_r[5];
 
             let s_l = self.tool.solve_s(r_l, bg_sq_l);
             let s_r = self.tool.solve_s(r_r, bg_sq_r);
@@ -380,18 +482,20 @@ impl SimBox {
             let psw_r = s_r * bg_sq_r / (bg_sq_r + 1.0) * msw_r / 3.0;
             let ht_r = (eb_r + psw_r) * bt_r;
 
-            // Physical flux
+            // Physical flux (indices 0-3: eb, ht, msw, mej; 4: u2_th)
             let fl = [
                 ht_l / r_l * C_SPEED,
                 (ht_l * bt_l + psw_l) / r_l * C_SPEED,
                 msw_l * bt_l / r_l * C_SPEED,
                 mej_l * bt_l / r_l * C_SPEED,
+                u2th_l * bt_l / r_l * C_SPEED,
             ];
             let fr = [
                 ht_r / r_r * C_SPEED,
                 (ht_r * bt_r + psw_r) / r_r * C_SPEED,
                 msw_r * bt_r / r_r * C_SPEED,
                 mej_r * bt_r / r_r * C_SPEED,
+                u2th_r * bt_r / r_r * C_SPEED,
             ];
 
             // Viscosity
@@ -411,6 +515,8 @@ impl SimBox {
                 0.5 * (fl[2] + fr[2] - alpha * (msw_r - msw_l)) * sin_edge;
             self.numerical_flux[3][i] =
                 0.5 * (fl[3] + fr[3] - alpha * (mej_r - mej_l)) * sin_edge;
+            self.numerical_flux[4][i] =
+                0.5 * (fl[4] + fr[4] - alpha * (u2th_r - u2th_l)) * sin_edge;
         }
     }
 
@@ -437,25 +543,34 @@ impl SimBox {
             let vol =
                 self.theta_edge[i].cos() - self.theta_edge[i + 1].cos();
 
-            // dR/dt
+            // dR/dt (R slope is at index 5)
             let il = if i > 0 { i - 1 } else { 0 };
             let ir = if i < self.ntheta - 1 { i + 1 } else { self.ntheta - 1 };
             let alpha = self.alpha_r[il].max(self.alpha_r[i]).max(self.alpha_r[ir]);
-            self.dy_dt[4][i] = (beta_f - self.slope[4][i] * self.beta_th[i] / self.r[i]
+            self.dy_dt[4][i] = (beta_f - self.slope[5][i] * self.beta_th[i] / self.r[i]
                 + 0.5 * alpha * (self.r_slope_r[i] - self.r_slope_l[i]))
                 * C_SPEED;
 
             let rho = self.tool.solve_density(self.r[i]) * MASS_P;
+            let dmsw_dt = self.dy_dt[4][i] * rho * self.r[i] * self.r[i];
             self.dy_dt[0][i] = (self.numerical_flux[0][i] - self.numerical_flux[0][i + 1]) / vol
-                + self.dy_dt[4][i] * rho * self.r[i] * self.r[i];
+                + dmsw_dt;
             self.dy_dt[1][i] = (self.numerical_flux[1][i] - self.numerical_flux[1][i + 1]) / vol
                 + (self.theta[i].cos() / self.theta[i].sin() * self.psw[i]
                     - self.ht[i] * beta_r)
                     * C_SPEED
                     / self.r[i];
             self.dy_dt[2][i] = (self.numerical_flux[2][i] - self.numerical_flux[2][i + 1]) / vol
-                + self.dy_dt[4][i] * rho * self.r[i] * self.r[i];
+                + dmsw_dt;
             self.dy_dt[3][i] = (self.numerical_flux[3][i] - self.numerical_flux[3][i + 1]) / vol;
+
+            // u2_th evolution (simplified PDE: omit dGamma/dt term)
+            let ad_idx = reverse_shock::adiabatic_idx(self.gamma[i]);
+            let dln_v_dt = 3.0 * self.dy_dt[4][i] / self.r[i];
+            let heating = (self.gamma[i] - 1.0) * C2 * dmsw_dt;
+            let cooling = -(ad_idx - 1.0) * dln_v_dt * self.u2_th[i];
+            self.dy_dt[5][i] = (self.numerical_flux[4][i] - self.numerical_flux[4][i + 1]) / vol
+                + heating + cooling;
         }
     }
 
@@ -467,6 +582,7 @@ impl SimBox {
             self.rk2_scratch[2][j] = self.msw[j];
             self.rk2_scratch[3][j] = self.mej[j];
             self.rk2_scratch[4][j] = self.r[j];
+            self.rk2_scratch[5][j] = self.u2_th[j];
         }
 
         // Step 1
@@ -480,6 +596,8 @@ impl SimBox {
             self.msw[j] += dt * self.dy_dt[2][j];
             self.mej[j] += dt * self.dy_dt[3][j];
             self.r[j] += dt * self.dy_dt[4][j];
+            self.u2_th[j] += dt * self.dy_dt[5][j];
+            self.u2_th[j] = self.u2_th[j].max(0.0);
         }
         self.solve_primitive();
         self.solve_eigen();
@@ -495,20 +613,23 @@ impl SimBox {
             self.msw[j] = 0.5 * self.rk2_scratch[2][j] + 0.5 * self.msw[j] + 0.5 * dt * self.dy_dt[2][j];
             self.mej[j] = 0.5 * self.rk2_scratch[3][j] + 0.5 * self.mej[j] + 0.5 * dt * self.dy_dt[3][j];
             self.r[j] = 0.5 * self.rk2_scratch[4][j] + 0.5 * self.r[j] + 0.5 * dt * self.dy_dt[4][j];
+            self.u2_th[j] = 0.5 * self.rk2_scratch[5][j] + 0.5 * self.u2_th[j] + 0.5 * dt * self.dy_dt[5][j];
+            self.u2_th[j] = self.u2_th[j].max(0.0);
         }
         self.solve_primitive();
         self.solve_eigen();
     }
 
     fn save_primitives(&mut self) {
-        let primitives: [&Vec<f64>; 5] = [
+        let primitives: [&Vec<f64>; 6] = [
             &self.msw,
             &self.mej,
             &self.beta_gamma_sq,
             &self.beta_th,
             &self.r,
+            &self.u2_th,
         ];
-        for i in 0..5 {
+        for i in 0..6 {
             for j in 0..self.ntheta {
                 self.ys[i][j].push(primitives[i][j]);
             }
@@ -517,7 +638,7 @@ impl SimBox {
 
     fn init_solution(&mut self) {
         self.ts.push(self.tmin);
-        self.ys = vec![vec![Vec::new(); self.ntheta]; 5];
+        self.ys = vec![vec![Vec::new(); self.ntheta]; 6];
         self.save_primitives();
     }
 
@@ -558,29 +679,51 @@ impl SimBox {
         }
     }
 
-    /// Check if all theta cells have identical initial conditions (tophat jet).
-    fn is_uniform_ics(&self) -> bool {
+    /// Count contiguous cells from index 0 that share identical initial conditions.
+    /// For a tophat jet with a tail, returns the number of core cells (theta < theta_c)
+    /// that all have the same energy/mass/radius. Tail cells beyond theta_c differ.
+    fn count_uniform_core(&self) -> usize {
         if self.ntheta <= 1 {
-            return true;
+            return self.ntheta;
         }
+        let mut n = 1;
         for i in 1..self.ntheta {
             if (self.eb[i] - self.eb[0]).abs() > self.eb[0].abs() * 1e-12
                 || (self.msw[i] - self.msw[0]).abs() > self.msw[0].abs() * 1e-12
                 || (self.mej[i] - self.mej[0]).abs() > self.mej[0].abs().max(1e-30) * 1e-12
                 || (self.r[i] - self.r[0]).abs() > self.r[0].abs() * 1e-12
             {
-                return false;
+                break;
             }
+            n += 1;
         }
-        true
+        n
+    }
+
+    /// Compute radiative efficiency (matching VegasAfterglow's formula).
+    /// Returns eps_rad ∈ [0, eps_e].
+    fn compute_eps_rad(&self, gamma: f64, t_comv: f64, rho: f64) -> f64 {
+        if self.eps_e <= 0.0 || self.eps_b <= 0.0 || self.p_fwd <= 2.0 || t_comv <= 0.0 {
+            return 0.0;
+        }
+        let e_th = (gamma - 1.0) * 4.0 * gamma * rho * C2;
+        if e_th <= 0.0 { return 0.0; }
+        let gm = self.gamma_m_coeff * (gamma - 1.0) + 1.0;
+        let gc = (self.gamma_c_coeff / (e_th * t_comv)).max(1.0);
+        let ratio = gm / gc;
+        if ratio < 1.0 {
+            if ratio < 0.01 { 0.0 } else { self.eps_e * ratio.powf(self.p_fwd - 2.0) }
+        } else {
+            self.eps_e
+        }
     }
 
     /// Number of state variables for the ODE spread solver.
-    /// State: [msw, mej, r, theta_cell, beta_gamma_sq]
-    const ODE_NVAR: usize = 5;
+    /// State: [msw, mej, r, theta_cell, beta_gamma_sq, u2_th, t_comv]
+    const ODE_NVAR: usize = 7;
 
     /// ODE right-hand side for a single cell with lateral spreading.
-    /// State: [msw, mej, r, theta_cell, beta_gamma_sq]
+    /// State: [msw, mej, r, theta_cell, beta_gamma_sq, u2_th, t_comv]
     /// Evolves primitives directly — no root-finding needed.
     fn ode_rhs_spread_cell(
         &self,
@@ -595,76 +738,77 @@ impl SimBox {
         let r = state[2];
         let theta_cell = state[3];
         let bg_sq = state[4].max(0.0);
+        let u2_th = state[5];
 
         let gamma = (bg_sq + 1.0).sqrt();
         let beta = (bg_sq / (bg_sq + 1.0)).sqrt();
+        let u = bg_sq.sqrt();
 
-        // Forward shock velocity
-        let beta_f = 4.0 * beta * (bg_sq + 1.0) / (4.0 * bg_sq + 3.0);
+        // dr/dt = β·c (fluid/contact-discontinuity velocity in lab frame)
+        let dr_dt = beta * C_SPEED;
 
-        // dr/dt
-        let dr_dt = beta_f * C_SPEED;
-
-        // Solid angle correction for mass sweeping
-        let f_spread_val = if spread {
-            let cos_theta0 = theta0_i.cos();
-            if (1.0 - cos_theta0).abs() > 1e-30 {
-                (1.0 - theta_cell.cos()) / (1.0 - cos_theta0)
-            } else {
-                1.0
-            }
-        } else {
-            1.0
-        };
-
+        // Mass sweeping: dm2/dt = r²·ρ·dr/dt (per steradian, NO f_spread)
         let rho = self.tool.solve_density(r) * MASS_P;
-        let source = dr_dt * rho * r * r * f_spread_val;
-        let dmsw_dt = source;
+        let dm2_dt = dr_dt * rho * r * r;
+        let dmsw_dt = dm2_dt;
         let dmej_dt = 0.0;
 
-        // Spreading: dθ/dt = F(u) · β_f · c / (2Γr)
+        // Spreading: dθ/dt = cs_factor · β·c / (2Γr) · f_suppress
+        // cs_factor = sqrt((2u²+3)/(4u²+3)) — relativistic sound speed correction
         let dtheta_dt = if spread {
-            let u = bg_sq.sqrt();
             let theta_s = theta_cell.max(theta_c);
             let f_suppress = 1.0 / (1.0 + 7.0 * u * theta_s);
-            f_suppress * beta_f * C_SPEED / (2.0 * gamma * r)
+            let cs_factor = ((2.0 * bg_sq + 3.0) / (4.0 * bg_sq + 3.0)).sqrt();
+            f_suppress * dr_dt / (2.0 * gamma * r) * cs_factor
         } else {
             0.0
         };
 
-        // d(beta_gamma_sq)/dt from energy conservation:
-        // Eb = s * gamma² * (1 + beta⁴/3) * msw + (1-s)*gamma*msw + gamma*mej
-        // dEb/dt = source (same as dmsw/dt)
-        // d(bg_sq)/dt = [source*(1 - ∂Eb/∂msw) - (∂Eb/∂r)*dr/dt] / (∂Eb/∂bg_sq)
-        let s = self.tool.solve_s(r, bg_sq);
-        let beta_sq = bg_sq / (bg_sq + 1.0);
-        let beta4 = beta_sq * beta_sq;
+        // Adiabatic index: γ_ad = 4/3 + 1/(3Γ) (Synge EOS)
+        let ad_idx = reverse_shock::adiabatic_idx(gamma);
 
-        // ∂Eb/∂msw
-        let deb_dmsw = s * (bg_sq + 1.0) * (1.0 + beta4 / 3.0) + (1.0 - s) * gamma;
+        // Effective Gamma: Γ_eff = (γ_ad·(Γ²-1) + 1) / Γ
+        let gamma2 = gamma * gamma;
+        let gamma_eff = (ad_idx * (gamma2 - 1.0) + 1.0) / gamma;
+        let d_gamma_eff = (ad_idx * (gamma2 + 1.0) - 1.0) / gamma2;
 
-        // ∂Eb/∂r: only nonzero if s depends on r (wind medium)
-        // For generality, compute via finite difference (cheap — just 2 function evals)
-        let deb_dr = if self.tool.nwind_nonzero() {
-            let eps = r * 1e-8;
-            let s_plus = self.tool.solve_s(r + eps, bg_sq);
-            let s_minus = self.tool.solve_s(r - eps, bg_sq);
-            let ds_dr = (s_plus - s_minus) / (2.0 * eps);
-            ds_dr * ((bg_sq + 1.0) * (1.0 + beta4 / 3.0) - gamma) * msw
+        // Base dlnV/dt = 3·dr/dt/r (radial volume expansion)
+        let mut dln_v_dt_gamma = 3.0 * dr_dt / r;
+
+        // Spreading corrections for dGamma/dt
+        let (dm_dt_swept, m_swept, u_spread) = if spread {
+            let cos_theta = theta_cell.cos();
+            let sin_theta = theta_cell.sin();
+            let d_omega0 = (1.0 - theta0_i.cos()).max(1e-30);
+            let f_spread = (1.0 - cos_theta) / d_omega0;
+
+            // Lateral expansion factor
+            let lateral = if (1.0 - cos_theta).abs() > 1e-30 {
+                sin_theta / (1.0 - cos_theta) * dtheta_dt
+            } else {
+                0.0
+            };
+
+            // Effective mass sweeping rate (per initial solid angle)
+            let dm_sw = dm2_dt * f_spread + msw / d_omega0 * sin_theta * dtheta_dt;
+            let m_sw = msw * f_spread;
+
+            // Volume expansion includes lateral term
+            dln_v_dt_gamma += lateral;
+
+            // Internal energy scaled by f_spread for dGamma equation
+            let u_sp = u2_th * f_spread;
+
+            (dm_sw, m_sw, u_sp)
         } else {
-            0.0
+            (dm2_dt, msw, u2_th)
         };
 
-        // ∂Eb/∂(bg_sq)
-        // d(gamma)/d(bg_sq) = 1/(2*gamma)
-        // d(beta⁴)/d(bg_sq) = 2*beta² / (1+bg_sq)² = 2*bg_sq/(1+bg_sq)³
-        let dgamma_du = 1.0 / (2.0 * gamma);
-        let dbeta4_du = 2.0 * bg_sq / ((bg_sq + 1.0) * (bg_sq + 1.0) * (bg_sq + 1.0));
-        let deb_du = s * (1.0 + beta4 / 3.0 + (bg_sq + 1.0) * dbeta4_du / 3.0) * msw
-            + (1.0 - s) * dgamma_du * msw
-            + dgamma_du * mej;
+        // dΓ/dt = (a1 + a2) / (b1 + b2)  [energy-momentum conservation]
+        let mut a1 = -(gamma - 1.0) * (gamma_eff + 1.0) * C2 * dm_dt_swept;
+        let a2 = (ad_idx - 1.0) * gamma_eff * u_spread * dln_v_dt_gamma;
 
-        // Magnetar spin-down injection: sum over episodes, L_inj / c² [g/s/sr]
+        // Magnetar spin-down injection: L_inj [erg/s/sr]
         let l_inj: f64 = self.magnetar_episodes.iter().map(|&(l0_c2, t0, q, ts)| {
             if t >= ts {
                 l0_c2 * (1.0 + (t - ts) / t0).powf(-q)
@@ -672,14 +816,49 @@ impl SimBox {
                 0.0
             }
         }).sum();
+        a1 += l_inj * C2;
 
-        let dbg_sq_dt = if deb_du.abs() > 1e-60 {
-            (source * (1.0 - deb_dmsw) - deb_dr * dr_dt + l_inj) / deb_du
+        let b1 = (mej + m_swept) * C2;
+        let b2 = (d_gamma_eff + gamma_eff * (ad_idx - 1.0) / gamma) * u_spread;
+
+        let d_gamma_dt = if (b1 + b2).abs() > 1e-60 {
+            (a1 + a2) / (b1 + b2)
         } else {
             0.0
         };
 
-        [dmsw_dt, dmej_dt, dr_dt, dtheta_dt, dbg_sq_dt]
+        // d(βΓ)²/dt = 2·Γ·dΓ/dt
+        let dbg_sq_dt = 2.0 * gamma * d_gamma_dt;
+
+        // Thermal energy evolution: dU2_th/dt
+        // Uses different spreading corrections than dGamma/dt (VegasAfterglow convention)
+        let du2th_dt = {
+            let mut dm_dt_u = dm2_dt;
+            let mut dln_v_u = 3.0 * dr_dt / r - d_gamma_dt / gamma;
+
+            if spread {
+                let cos_theta = theta_cell.cos();
+                let sin_theta = theta_cell.sin();
+
+                let factor = if (1.0 - cos_theta).abs() > 1e-30 {
+                    sin_theta / (1.0 - cos_theta) * dtheta_dt
+                } else {
+                    0.0
+                };
+
+                dm_dt_u += msw * factor;
+                dln_v_u += factor;
+                dln_v_u += factor / (ad_idx - 1.0);
+            }
+
+            let eps_rad = self.compute_eps_rad(gamma, state[6], rho);
+            (1.0 - eps_rad) * (gamma - 1.0) * C2 * dm_dt_u - (ad_idx - 1.0) * dln_v_u * u2_th
+        };
+
+        // Comoving time: dt_comv/dt_lab = 1/Γ
+        let dt_comv_dt = 1.0 / gamma;
+
+        [dmsw_dt, dmej_dt, dr_dt, dtheta_dt, dbg_sq_dt, du2th_dt, dt_comv_dt]
     }
 
     /// Adaptive RK45 step for a single spreading cell.
@@ -773,8 +952,8 @@ impl SimBox {
     /// Evolves primitive variables directly — no root-finding in the RHS.
     fn solve_ode_spread(&mut self) {
         let real_ntheta = self.ntheta;
-        let is_tophat = real_ntheta > 1 && self.is_uniform_ics();
-        let solve_ntheta = if is_tophat { 1 } else { real_ntheta };
+        let n_core = self.count_uniform_core();
+        let is_tophat = n_core > 1;
 
         // Pre-compute log-spaced output times
         let log_tmin = self.tmin.ln();
@@ -788,24 +967,49 @@ impl SimBox {
         }
         let nt = output_times.len();
 
-        // Initialize output: ys[5][ntheta][nt]
-        let mut ys = vec![vec![vec![0.0; nt]; real_ntheta]; 5];
+        // Initialize output: ys[7][ntheta][nt]
+        let mut ys = vec![vec![vec![0.0; nt]; real_ntheta]; 7];
         let ts = output_times.clone();
 
         let theta_c = self.theta_c;
         let rtol = 1e-6;
 
-        // Solve each cell independently
-        for i in 0..solve_ntheta {
-            let theta0_i = self.theta[i];
+        // For tophat: solve 1 representative core cell, then all tail cells.
+        // For structured jet: solve all cells independently.
+        let solve_list: Vec<usize> = if is_tophat {
+            // Cell 0 represents the core (will be replicated to 0..n_core).
+            // Then solve tail cells n_core..real_ntheta individually.
+            let mut v = vec![0usize];
+            for i in n_core..real_ntheta {
+                v.push(i);
+            }
+            v
+        } else {
+            (0..real_ntheta).collect()
+        };
 
-            // Initial state: [msw, mej, r, theta_cell, beta_gamma_sq]
+        for &i in &solve_list {
+            // For tophat core cells, use theta_c as the representative initial angle.
+            // Using theta[0] (the first tiny grid cell) gives a pathologically
+            // large f_spread = (1-cos(theta))/(1-cos(theta0)) when theta0 ≈ 0.
+            let theta0_i = if is_tophat && i < n_core { self.theta_c } else { self.theta[i] };
+
+            // Initial u2_th: thermal energy per solid angle
+            let bg_sq_0 = self.beta_gamma_sq[i];
+            let gamma_0 = (bg_sq_0 + 1.0).sqrt();
+            let u2_th_0 = (1.0 - self.eps_e) * (gamma_0 - 1.0) * self.msw[i] * C2;
+            // Initial t_comv = t_lab / Gamma (coasting phase)
+            let t_comv_0 = self.tmin / gamma_0;
+
+            // Initial state: [msw, mej, r, theta_cell, beta_gamma_sq, u2_th, t_comv]
             let mut state = [
                 self.msw[i],
                 self.mej[i],
                 self.r[i],
                 theta0_i,
                 self.beta_gamma_sq[i],
+                u2_th_0,
+                t_comv_0,
             ];
 
             // Save initial primitives
@@ -815,6 +1019,8 @@ impl SimBox {
             ys[2][i][0] = state[4]; // beta_gamma_sq
             ys[3][i][0] = bt;       // beta_th
             ys[4][i][0] = state[2]; // r
+            ys[5][i][0] = state[5]; // u2_th
+            ys[6][i][0] = state[6]; // t_comv
 
             let mut t = self.tmin;
             let mut dt = (self.tmax - self.tmin) * 1e-4;
@@ -832,6 +1038,7 @@ impl SimBox {
                     state = new_state;
                     state[3] = state[3].max(0.0).min(PI); // clamp theta
                     state[4] = state[4].max(0.0);         // clamp bg_sq
+                    state[5] = state[5].max(0.0);         // clamp u2_th
 
                     while save_idx < nt && output_times[save_idx] <= t + 1e-10 {
                         let bt = self.compute_beta_th_from_state(&state, theta0_i, true);
@@ -840,6 +1047,8 @@ impl SimBox {
                         ys[2][i][save_idx] = state[4]; // beta_gamma_sq
                         ys[3][i][save_idx] = bt;
                         ys[4][i][save_idx] = state[2]; // r
+                        ys[5][i][save_idx] = state[5]; // u2_th
+                        ys[6][i][save_idx] = state[6]; // t_comv
                         save_idx += 1;
                     }
 
@@ -856,14 +1065,19 @@ impl SimBox {
                 ys[2][i][save_idx] = state[4];
                 ys[3][i][save_idx] = bt;
                 ys[4][i][save_idx] = state[2];
+                ys[5][i][save_idx] = state[5];
+                ys[6][i][save_idx] = state[6];
                 save_idx += 1;
             }
         }
 
         if is_tophat {
-            for var in 0..5 {
+            // Replicate core cell 0 solution to all core cells (0..n_core)
+            for var in 0..7 {
                 let template = ys[var][0].clone();
-                ys[var] = vec![template; real_ntheta];
+                for j in 1..n_core {
+                    ys[var][j] = template.clone();
+                }
             }
         }
 
@@ -882,11 +1096,11 @@ impl SimBox {
 
         let gamma = (bg_sq + 1.0).sqrt();
         let beta = (bg_sq / (bg_sq + 1.0)).sqrt();
-        let beta_f = 4.0 * beta * (bg_sq + 1.0) / (4.0 * bg_sq + 3.0);
         let u = bg_sq.sqrt();
         let theta_s = theta_cell.max(self.theta_c);
         let f_suppress = 1.0 / (1.0 + 7.0 * u * theta_s);
-        let dtheta_dt = f_suppress * beta_f * C_SPEED / (2.0 * gamma * r);
+        let cs_factor = ((2.0 * bg_sq + 3.0) / (4.0 * bg_sq + 3.0)).sqrt();
+        let dtheta_dt = f_suppress * beta * C_SPEED / (2.0 * gamma * r) * cs_factor;
         r * dtheta_dt / C_SPEED
     }
 
@@ -895,8 +1109,8 @@ impl SimBox {
     /// conservative-to-primitive root-finding and heap allocations.
     fn solve_no_spread(&mut self) {
         let real_ntheta = self.ntheta;
-        let is_tophat = real_ntheta > 1 && self.is_uniform_ics();
-        let solve_ntheta = if is_tophat { 1 } else { real_ntheta };
+        let n_core = self.count_uniform_core();
+        let is_tophat = n_core > 1;
 
         // Pre-compute log-spaced output times
         let log_tmin = self.tmin.ln();
@@ -910,23 +1124,41 @@ impl SimBox {
         }
         let nt = output_times.len();
 
-        // Initialize output: ys[5][ntheta][nt]
-        let mut ys = vec![vec![vec![0.0; nt]; real_ntheta]; 5];
+        // Initialize output: ys[7][ntheta][nt]
+        let mut ys = vec![vec![vec![0.0; nt]; real_ntheta]; 7];
         let ts = output_times.clone();
 
         let theta_c = self.theta_c;
         let rtol = 1e-6;
 
-        for i in 0..solve_ntheta {
+        let solve_list: Vec<usize> = if is_tophat {
+            let mut v = vec![0usize];
+            for i in n_core..real_ntheta {
+                v.push(i);
+            }
+            v
+        } else {
+            (0..real_ntheta).collect()
+        };
+
+        for &i in &solve_list {
             let theta0_i = self.theta[i];
 
-            // Initial state: [msw, mej, r, theta_cell, beta_gamma_sq]
+            // Initial u2_th: thermal energy per solid angle
+            let bg_sq_0 = self.beta_gamma_sq[i];
+            let gamma_0 = (bg_sq_0 + 1.0).sqrt();
+            let u2_th_0 = (1.0 - self.eps_e) * (gamma_0 - 1.0) * self.msw[i] * C2;
+            let t_comv_0 = self.tmin / gamma_0;
+
+            // Initial state: [msw, mej, r, theta_cell, beta_gamma_sq, u2_th, t_comv]
             let mut state = [
                 self.msw[i],
                 self.mej[i],
                 self.r[i],
                 theta0_i,
                 self.beta_gamma_sq[i],
+                u2_th_0,
+                t_comv_0,
             ];
 
             // Save initial primitives (beta_th = 0 for no-spread)
@@ -935,6 +1167,8 @@ impl SimBox {
             ys[2][i][0] = state[4]; // beta_gamma_sq
             ys[3][i][0] = 0.0;      // beta_th
             ys[4][i][0] = state[2]; // r
+            ys[5][i][0] = state[5]; // u2_th
+            ys[6][i][0] = state[6]; // t_comv
 
             let mut t = self.tmin;
             let mut dt = (self.tmax - self.tmin) * 1e-4;
@@ -951,6 +1185,7 @@ impl SimBox {
                     t += dt;
                     state = new_state;
                     state[4] = state[4].max(0.0); // clamp bg_sq
+                    state[5] = state[5].max(0.0); // clamp u2_th
 
                     while save_idx < nt && output_times[save_idx] <= t + 1e-10 {
                         ys[0][i][save_idx] = state[0]; // msw
@@ -958,6 +1193,8 @@ impl SimBox {
                         ys[2][i][save_idx] = state[4]; // beta_gamma_sq
                         ys[3][i][save_idx] = 0.0;      // beta_th
                         ys[4][i][save_idx] = state[2]; // r
+                        ys[5][i][save_idx] = state[5]; // u2_th
+                        ys[6][i][save_idx] = state[6]; // t_comv
                         save_idx += 1;
                     }
 
@@ -973,14 +1210,18 @@ impl SimBox {
                 ys[2][i][save_idx] = state[4];
                 ys[3][i][save_idx] = 0.0;
                 ys[4][i][save_idx] = state[2];
+                ys[5][i][save_idx] = state[5];
+                ys[6][i][save_idx] = state[6];
                 save_idx += 1;
             }
         }
 
         if is_tophat {
-            for var in 0..5 {
+            for var in 0..7 {
                 let template = ys[var][0].clone();
-                ys[var] = vec![template; real_ntheta];
+                for j in 1..n_core {
+                    ys[var][j] = template.clone();
+                }
             }
         }
 

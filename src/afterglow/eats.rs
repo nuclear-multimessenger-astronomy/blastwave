@@ -101,12 +101,13 @@ impl EATS {
         y_data: &[Vec<Vec<f64>>],
         t_data: &[f64],
         tool: &Tool,
-    ) -> Option<[f64; 6]> {
+    ) -> Option<[f64; 8]> {
         let (t_idx1, t_idx2) = self.find_time_index(mu, tobs_z, theta_index, y_data, t_data)?;
         let t = self.solve_t(mu, tobs_z, theta_index, t_idx1, t_idx2, y_data, t_data);
 
-        let mut val = [0.0f64; 6];
-        for i in 0..5 {
+        let nvar = y_data.len().min(7); // 6 for PDE, 7 for ODE (includes t_comv)
+        let mut val = [0.0f64; 8];
+        for i in 0..nvar {
             val[i] = tool.linear(
                 t,
                 t_data[t_idx1],
@@ -115,7 +116,7 @@ impl EATS {
                 y_data[i][theta_index][t_idx2],
             );
         }
-        val[5] = t;
+        val[7] = t; // lab time always at index 7
         Some(val)
     }
 
@@ -124,7 +125,7 @@ impl EATS {
         theta: f64,
         phi: f64,
         theta_v: f64,
-        val: &[f64; 6],
+        val: &[f64; 8],
         tool: &Tool,
         blast: &mut Blast,
     ) {
@@ -132,8 +133,10 @@ impl EATS {
         let beta_gamma_sq = val[2];
         let beta_th = val[3];
         let r = val[4];
+        let u2_th = val[5];
+        let t_comv_tracked = val[6]; // 0 if PDE solver (no t_comv tracking)
 
-        blast.t = val[5];
+        blast.t = val[7];
         blast.theta = theta;
         blast.phi = phi;
         blast.r = r;
@@ -169,8 +172,24 @@ impl EATS {
         // thermodynamic properties
         blast.n_ambient = tool.solve_density(r);
         blast.n_blast = 4.0 * blast.gamma * blast.n_ambient;
+
+        // Derive gamma_th from tracked thermal energy
+        blast.gamma_th = if msw > 0.0 && u2_th > 0.0 {
+            u2_th / (msw * C_SPEED * C_SPEED) + 1.0
+        } else {
+            blast.gamma // fallback: use bulk Gamma
+        };
+
+        // Use tracked t_comv if available (ODE solver), otherwise approximate
+        blast.t_comv = if t_comv_tracked > 0.0 {
+            t_comv_tracked
+        } else {
+            // Fallback for PDE solver: t_comv ≈ t_lab / Gamma
+            blast.t / blast.gamma
+        };
+
         blast.e_density =
-            (blast.gamma - 1.0) * blast.n_blast * MASS_P * C_SPEED * C_SPEED * blast.s;
+            (blast.gamma_th - 1.0) * blast.n_blast * MASS_P * C_SPEED * C_SPEED;
         blast.pressure =
             4.0 / 3.0 * beta_gamma_sq * blast.n_ambient * MASS_P * C_SPEED * C_SPEED * blast.s;
         blast.dr = msw / r / r / blast.n_blast / MASS_P;
@@ -215,8 +234,8 @@ impl EATS {
                 2.0 * PI - theta_data[theta_idx1]
             };
 
-            let mut v = [0.0f64; 6];
-            for i in 0..6 {
+            let mut v = [0.0f64; 8];
+            for i in 0..8 {
                 v[i] = tool.linear(theta, theta_data[theta_idx1], mirror, val_l[i], val_r[i]);
             }
             val = v;
@@ -235,8 +254,8 @@ impl EATS {
                 None => return false,
             };
 
-            let mut v = [0.0f64; 6];
-            for i in 0..6 {
+            let mut v = [0.0f64; 8];
+            for i in 0..8 {
                 v[i] = tool.linear(
                     theta,
                     theta_data[theta_idx1],
@@ -346,8 +365,9 @@ impl EATS {
             None => return false,
         };
 
-        let mut val = [0.0f64; 6];
-        for i in 0..5 {
+        let nvar = y_data.len().min(7); // 6 for PDE, 7 for ODE (includes t_comv)
+        let mut val = [0.0f64; 8];
+        for i in 0..nvar {
             let y1 = tool.linear(
                 theta,
                 theta_data[theta_idx1],
@@ -364,7 +384,7 @@ impl EATS {
             );
             val[i] = tool.linear(t, t_data[t_idx1], t_data[t_idx2], y1, y2);
         }
-        val[5] = t;
+        val[7] = t;
 
         self.derive_blast(theta, phi, theta_v, &val, tool, blast);
         true
@@ -399,37 +419,81 @@ impl EATS {
         }
     }
 
-    /// Solve blast for reverse shock.
-    /// Uses forward shock EATS (same arrival time surface) but populates
-    /// RS-specific fields from rs_data.
+    /// Solve blast for reverse shock using self-consistent EATS from RS ODE data.
+    ///
+    /// Constructs a "shadow" y_data from the RS ODE output so that both the
+    /// EATS time mapping (which uses r(t)) and the blast state derivation
+    /// (which uses Gamma, m_sw, etc.) come from the same RS ODE trajectory.
+    /// This avoids the FS PDE / RS ODE Gamma mismatch that occurred when using
+    /// FS PDE data for time-of-arrival.
     pub fn solve_blast_reverse(
         &self,
         tobs_z: f64,
         theta: f64,
         phi: f64,
         theta_v: f64,
-        y_data: &[Vec<Vec<f64>>],  // forward shock data
+        _y_data: &[Vec<Vec<f64>>],  // forward shock data (unused now)
         rs_data: &[Vec<Vec<f64>>], // reverse shock data [NVAR_RS][ntheta][nt]
         t_data: &[f64],
         theta_data: &[f64],
         tool: &Tool,
         blast: &mut Blast,
     ) -> bool {
-        // First solve the forward EATS to get time and geometry
-        if !self.solve_blast(tobs_z, theta, phi, theta_v, y_data, t_data, theta_data, tool, blast) {
+        // Build shadow y_data from RS ODE data for self-consistent EATS.
+        // y_data layout: [0]=msw, [1]=mej, [2]=beta_gamma_sq, [3]=beta_th,
+        //                [4]=r, [5]=u2_th, [6]=t_comv
+        // RS ODE data:   [0]=Gamma, [1]=r, [2]=m3, [3]=x3, [4]=u3_th,
+        //                [5]=t_comv, [6]=gamma_th3, [7]=b3, [8]=n3,
+        //                [9]=gamma34, [10]=n4, [11]=m2, [12]=u2_th
+
+        // Quick check: if the RS data at the relevant theta cells has no
+        // valid data (gamma ≤ 1 and r = 0 everywhere), there is no RS
+        // contribution at this angle. This happens for tail cells that never
+        // had RS activity.
+        let (theta_idx1, theta_idx2) = self.find_theta_index(theta, theta_data, tool);
+        let has_rs = rs_data[0][theta_idx1].iter().any(|&g| g > 1.001)
+            || (theta_idx2 != theta_idx1
+                && rs_data[0][theta_idx2].iter().any(|&g| g > 1.001));
+        if !has_rs {
             return false;
         }
 
-        // Now interpolate RS variables at the same (t, theta) point
+        let ntheta = rs_data[0].len();
+        let nt = rs_data[0][0].len();
+
+        // Construct 7-variable shadow array: [7][ntheta][nt]
+        let mut rs_y: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0; nt]; ntheta]; 7];
+        for j in 0..ntheta {
+            for k in 0..nt {
+                // Clamp gamma ≥ 1 (tail cells may have gamma=0 from init)
+                let gamma = rs_data[0][j][k].max(1.0);
+                let beta_gamma_sq = gamma * gamma - 1.0;
+                rs_y[0][j][k] = rs_data[11][j][k]; // msw (FS swept mass from RS ODE)
+                // rs_y[1] = 0 (mej, not needed)
+                rs_y[2][j][k] = beta_gamma_sq;
+                // rs_y[3] = 0 (beta_th, no lateral spreading in RS ODE)
+                rs_y[4][j][k] = rs_data[1][j][k];  // r
+                rs_y[5][j][k] = rs_data[12][j][k]; // u2_th
+                rs_y[6][j][k] = rs_data[5][j][k];  // t_comv
+            }
+        }
+
+        // Use solve_blast with RS shadow data for self-consistent EATS
+        if !self.solve_blast(tobs_z, theta, phi, theta_v, &rs_y, t_data, theta_data, tool, blast) {
+            return false;
+        }
+
+        // If the EATS solved but r ≈ 0 (tail cell with no real RS data),
+        // there's no RS contribution at this angle.
+        if blast.r <= 0.0 || !blast.r.is_finite() || !blast.gamma.is_finite() {
+            return false;
+        }
+
+        // Now interpolate RS-specific variables at the solved (t, theta) point
         let t = blast.t;
         let (theta_idx1, theta_idx2) = self.find_theta_index(theta, theta_data, tool);
-
-        // Find time indices
         let t_idx = tool.find_index(t_data, t.min(t_data[t_data.len() - 1]).max(t_data[0]));
 
-        // Interpolate RS state: [0]=Gamma, [1]=r_rs, [2]=m3, [3]=x3, [4]=u3_th,
-        //                       [5]=t_comv, [6]=gamma_th3, [7]=b3, [8]=n3,
-        //                       [9]=gamma34, [10]=n4
         let interp_rs = |var: usize| -> f64 {
             if var >= rs_data.len() { return 0.0; }
             let y11 = rs_data[var][theta_idx1][t_idx.0];
@@ -448,6 +512,7 @@ impl EATS {
             }
         };
 
+        // Set RS-specific radiation fields
         blast.shock_type = crate::afterglow::blast::ShockType::Reverse;
         blast.gamma_th3 = interp_rs(6);
         blast.b3 = interp_rs(7);
@@ -456,10 +521,60 @@ impl EATS {
         blast.gamma34 = interp_rs(9);
         blast.n4_upstream = interp_rs(10);
 
+        // Post-crossing adiabatic cooling correction (matches VegasAfterglow cool_after_crossing).
+        // After the RS finishes crossing the ejecta, no new electrons are shocked.
+        // The existing population cools adiabatically as the shell expands.
+        // f_ad = (gamma_m_current - 1) / (gamma_m_crossing - 1)
+        //      = (gamma_th3_now - 1) / (gamma_th3_crossing - 1)  [radiation params cancel]
+        // gamma_c_cooled = (gamma_c_crossing - 1) * f_ad + 1
+        let t_crossing = interp_rs(13);
+        if blast.t > t_crossing && t_crossing > 0.0 {
+            // Interpolate crossing-time RS values
+            let t_cross_clamped = t_crossing.min(t_data[t_data.len() - 1]).max(t_data[0]);
+            let t_cross_idx = tool.find_index(t_data, t_cross_clamped);
+
+            let interp_rs_at_cross = |var: usize| -> f64 {
+                if var >= rs_data.len() { return 0.0; }
+                let y11 = rs_data[var][theta_idx1][t_cross_idx.0];
+                let y12 = if theta_idx2 < rs_data[var].len() { rs_data[var][theta_idx2][t_cross_idx.0] } else { y11 };
+                let y21 = rs_data[var][theta_idx1][t_cross_idx.1];
+                let y22 = if theta_idx2 < rs_data[var].len() { rs_data[var][theta_idx2][t_cross_idx.1] } else { y21 };
+
+                let y1 = if theta_idx1 == theta_idx2 { y11 } else {
+                    tool.linear(theta, theta_data[theta_idx1], theta_data[theta_idx2], y11, y12)
+                };
+                let y2 = if theta_idx1 == theta_idx2 { y21 } else {
+                    tool.linear(theta, theta_data[theta_idx1], theta_data[theta_idx2], y21, y22)
+                };
+                if t_cross_idx.0 == t_cross_idx.1 { y1 } else {
+                    tool.linear(t_crossing, t_data[t_cross_idx.0], t_data[t_cross_idx.1], y1, y2)
+                }
+            };
+
+            let gamma_th3_x = interp_rs_at_cross(6);  // gamma_th3 at crossing
+            let b3_x = interp_rs_at_cross(7);          // B-field at crossing
+            let t_comv_x = interp_rs_at_cross(5);      // comoving time at crossing
+
+            if gamma_th3_x > 1.0 && b3_x > 0.0 && t_comv_x > 0.0 && blast.gamma_th3 > 1.0 {
+                // Adiabatic decay factor
+                let f_ad = ((blast.gamma_th3 - 1.0) / (gamma_th3_x - 1.0)).clamp(0.0, 1.0);
+
+                // gamma_c at crossing time
+                let gamma_bar_x = 6.0 * PI * MASS_E * C_SPEED / (SIGMA_T * b3_x * b3_x * t_comv_x);
+                let gamma_c_x = (gamma_bar_x + (gamma_bar_x * gamma_bar_x + 4.0).sqrt()) / 2.0;
+                blast.gamma_c_override = (gamma_c_x - 1.0) * f_ad + 1.0;
+
+                // gamma_M at crossing time: sqrt(6π e / (σ_T * B_x))
+                let gamma_M_x = (6.0 * PI * E_CHARGE / (SIGMA_T * b3_x)).sqrt();
+                blast.gamma_M_override = (gamma_M_x - 1.0) * f_ad + 1.0;
+            }
+        }
+
         // RS-specific thermodynamic quantities
         let m3 = interp_rs(2);
-        let x3 = interp_rs(3);
-        let u3_th = interp_rs(4);
+
+        // Unified gamma_th for radiation models
+        blast.gamma_th = blast.gamma_th3;
 
         // Number density and energy density in region 3
         blast.n_blast = blast.n3;
@@ -469,7 +584,7 @@ impl EATS {
             blast.e_density = 0.0;
         }
 
-        // Shell width = x3 (comoving) / Γ (to lab frame approx)
+        // Shell width from RS data
         if blast.n3 > 0.0 && blast.r > 0.0 {
             blast.dr = m3 / (blast.r * blast.r * blast.n3 * MASS_P);
         } else {
@@ -497,4 +612,5 @@ impl EATS {
             None => f64::NAN,
         }
     }
+
 }

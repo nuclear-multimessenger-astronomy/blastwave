@@ -36,6 +36,7 @@ pub struct Blast {
     // thermodynamic values (comoving frame)
     pub n_blast: f64,
     pub e_density: f64,
+    pub gamma_th: f64,
     pub pressure: f64,
     pub n_ambient: f64,
     pub dr: f64,
@@ -50,4 +51,6 @@ pub struct Blast {
     pub t_comv: f64,       // comoving time
     pub gamma34: f64,      // relative Lorentz factor between regions 4 and 3
     pub n4_upstream: f64,  // upstream ejecta number density (region 4)
+    pub gamma_c_override: f64,  // post-crossing cooled gamma_c (0 = not set)
+    pub gamma_M_override: f64,  // post-crossing cooled gamma_M (0 = not set)
 }

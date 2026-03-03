@@ -220,6 +220,14 @@ pub struct PyJetConfig {
     #[pyo3(get, set)]
     pub cal_level: i32,
 
+    // Forward shock microphysics
+    #[pyo3(get, set)]
+    pub eps_e: f64,
+    #[pyo3(get, set)]
+    pub eps_b: f64,
+    #[pyo3(get, set)]
+    pub p_fwd: f64,
+
     // Reverse shock parameters
     #[pyo3(get, set)]
     pub include_reverse_shock: bool,
@@ -231,6 +239,8 @@ pub struct PyJetConfig {
     pub eps_b_rs: f64,
     #[pyo3(get, set)]
     pub p_rs: f64,
+    #[pyo3(get, set)]
+    pub duration: f64,
     #[pyo3(get, set)]
     pub t0_injection: f64,
     #[pyo3(get, set)]
@@ -271,11 +281,15 @@ impl PyJetConfig {
             spread_mode: String::new(),
             theta_c: 0.1,
             cal_level: 1,
+            eps_e: 0.0,
+            eps_b: 0.0,
+            p_fwd: 2.3,
             include_reverse_shock: false,
             sigma: 0.0,
             eps_e_rs: 0.1,
             eps_b_rs: 0.01,
             p_rs: 2.3,
+            duration: 0.0,
             t0_injection: 0.0,
             l_injection: 0.0,
             m_dot_injection: 0.0,
@@ -320,11 +334,15 @@ impl PyJetConfig {
             spread_mode,
             theta_c: self.theta_c,
             cal_level: self.cal_level,
+            eps_e: self.eps_e,
+            eps_b: self.eps_b,
+            p_fwd: self.p_fwd,
             include_reverse_shock: self.include_reverse_shock,
             sigma: self.sigma,
             eps_e_rs: self.eps_e_rs,
             eps_b_rs: self.eps_b_rs,
             p_rs: self.p_rs,
+            duration: self.duration,
             t0_injection: self.t0_injection,
             l_injection: self.l_injection,
             m_dot_injection: self.m_dot_injection,
@@ -374,12 +392,7 @@ impl PyJet {
 
     fn solveJet(&mut self) -> PyResult<()> {
         let mut sim_box = SimBox::new(&self.config);
-        sim_box.solve_pde();
-
-        // Solve reverse shock if enabled
-        if self.config.include_reverse_shock {
-            sim_box.solve_reverse_shock();
-        }
+        sim_box.solve_pde(); // includes RS solve + energy correction if enabled
 
         let theta = sim_box.get_theta().clone();
         let ts = sim_box.ts.clone();
@@ -416,7 +429,7 @@ impl PyJet {
         let inner = self.inner.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("solveJet() must be called first")
         })?;
-        let nvar = 5;
+        let nvar = inner.ys.len();
         let ntheta = inner.theta.len();
         let nt = inner.ts.len();
 
@@ -839,7 +852,7 @@ impl PyJet {
             let (nu_s, _) = extract_broadcast(&nu, py, Some(n))?;
             let (rtol_s, _) = extract_broadcast(&rtol, py, Some(n))?;
 
-            let mut results: Vec<f64> = py.allow_threads(|| {
+            let results: Vec<f64> = py.allow_threads(|| {
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
@@ -853,7 +866,8 @@ impl PyJet {
                     .collect()
             });
 
-            interpolate_zero_luminosities(&mut results, &t_s, &nu_s);
+            // Do NOT interpolate zero luminosities for RS — early zeros are physical
+            // (the RS hasn't formed yet), unlike the FS where zeros indicate numerical gaps.
             Ok(PyArray1::from_vec(py, results).into_any().unbind())
         } else {
             let t_val: f64 = tobs.extract(py)?;

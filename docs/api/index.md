@@ -137,7 +137,9 @@ Jet.dE0_dOmega(t, theta) -> float   # energy per sr (erg/sr)
 ```python
 FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True,
                    cal_level=1, model="sync", rtol=1e-3, flux_method=None,
-                   include_rs=False, rs_params=None) -> ndarray
+                   include_rs=False, rs_params=None, ebl=False,
+                   magnetar_l0=None, magnetar_t0=None,
+                   magnetar_q=None, magnetar_ts=None) -> ndarray
 ```
 
 ```python
@@ -195,3 +197,16 @@ All shortcut functions and `Jet.FluxDensity()` take a parameter dictionary `P`:
 | `n_gamma` | --- | `numeric` | Number of gamma bins (default 300) |
 | `gamma_max` | --- | `numeric` | Maximum electron Lorentz factor (default 1e8) |
 | `include_pp` | --- | `numeric` | Set to 1 for pair production |
+
+#### Energy injection (magnetar spin-down)
+
+The shortcut functions accept optional magnetar parameters:
+
+| Keyword | Units | Description |
+|---------|-------|-------------|
+| `magnetar_l0` | erg/s | Initial spin-down luminosity |
+| `magnetar_t0` | s | Spin-down timescale |
+| `magnetar_q` | --- | Temporal decay index (default 2.0) |
+| `magnetar_ts` | s | Start time for injection |
+
+Injection luminosity: $L(t) = L_0 (1 + (t - t_s) / t_0)^{-q}$.

@@ -12,13 +12,16 @@ fn sync_params(eps_e: f64, eps_b: f64, p_val: f64, blast: &Blast) -> (f64, f64, 
     match blast.shock_type {
         ShockType::Forward => {
             let n_blast = blast.n_blast;
-            let t = blast.t;
-            let gamma = blast.gamma;
             let e = blast.e_density;
 
-            let gamma_m = (p_val - 2.0) / (p_val - 1.0) * (eps_e * MASS_P / MASS_E * (gamma - 1.0));
+            let gamma_m = (p_val - 2.0) / (p_val - 1.0) * (eps_e * MASS_P / MASS_E * (blast.gamma_th - 1.0)) + 1.0;
             let b = (8.0 * PI * eps_b * e).sqrt();
-            let gamma_c = 6.0 * PI * MASS_E * gamma * C_SPEED / SIGMA_T / b / b / t;
+            // Use tracked comoving time for gamma_c (t_comv = integral of dt/Gamma)
+            let t_comv = blast.t_comv;
+            // Newtonian correction: solve γ_c(γ_c - 1) = gamma_bar
+            // → γ_c = (gamma_bar + √(gamma_bar² + 4)) / 2 (matches VegasAfterglow)
+            let gamma_bar = 6.0 * PI * MASS_E * C_SPEED / (SIGMA_T * b * b * t_comv);
+            let gamma_c = (gamma_bar + (gamma_bar * gamma_bar + 4.0).sqrt()) / 2.0;
             (gamma_m, gamma_c, b, n_blast, blast.dr, 1.0)
         }
         ShockType::Reverse => {
@@ -32,8 +35,24 @@ fn sync_params(eps_e: f64, eps_b: f64, p_val: f64, blast: &Blast) -> (f64, f64, 
             }
 
             let gamma_m = (p_val - 2.0) / (p_val - 1.0) * eps_e * (gamma_th3 - 1.0) * MASS_P / MASS_E + 1.0;
-            let gamma_c = (6.0 * PI * MASS_E * C_SPEED / (SIGMA_T * b * b * t_comv)).max(1.0);
-            (gamma_m, gamma_c, b, n3, blast.dr, 1.0)
+            // Post-crossing: use cooled gamma_c from crossing time
+            let gamma_c = if blast.gamma_c_override > 0.0 {
+                blast.gamma_c_override
+            } else {
+                let gamma_bar = 6.0 * PI * MASS_E * C_SPEED / (SIGMA_T * b * b * t_comv);
+                (gamma_bar + (gamma_bar * gamma_bar + 4.0).sqrt()) / 2.0
+            };
+            // Cyclotron correction: suppresses emission when gamma_m ≈ 1
+            // (electrons are barely relativistic, synchrotron → cyclotron).
+            // Matches VegasAfterglow's f_syn factor.
+            let f_syn = if gamma_m > 1.0 && p_val <= 3.0 {
+                (gamma_m - 1.0) / gamma_m
+            } else if gamma_m > 1.0 {
+                ((gamma_m - 1.0) / gamma_m).powf((p_val - 1.0) / 2.0)
+            } else {
+                0.0
+            };
+            (gamma_m, gamma_c, b, n3, blast.dr, f_syn)
         }
     }
 }
@@ -44,14 +63,14 @@ pub fn sync(nu: f64, p: &Dict, blast: &Blast) -> f64 {
     let eps_b = *p.get("eps_b").expect("sync requires 'eps_b'");
     let p_val = *p.get("p").expect("sync requires 'p'");
 
-    let (gamma_m, gamma_c, b, n_blast, dr, _f) = sync_params(eps_e, eps_b, p_val, blast);
+    let (gamma_m, gamma_c, b, n_blast, dr, f_syn) = sync_params(eps_e, eps_b, p_val, blast);
     if b <= 0.0 || n_blast <= 0.0 || dr <= 0.0 {
         return 0.0;
     }
 
     let nu_m = 3.0 * E_CHARGE * b * gamma_m * gamma_m / 4.0 / PI / C_SPEED / MASS_E;
     let nu_c = 3.0 * E_CHARGE * b * gamma_c * gamma_c / 4.0 / PI / C_SPEED / MASS_E;
-    let e_p = 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f_syn * n_blast
         / MASS_E
         / C_SPEED
         / C_SPEED;
@@ -83,16 +102,16 @@ pub fn sync_dnp(nu: f64, p: &Dict, blast: &Blast) -> f64 {
     let eps_b = *p.get("eps_b").expect("sync_dnp requires 'eps_b'");
     let p_val = *p.get("p").expect("sync_dnp requires 'p'");
 
-    let (mut gamma_m, gamma_c, b, n_blast, dr, _) = sync_params(eps_e, eps_b, p_val, blast);
+    let (mut gamma_m, gamma_c, b, n_blast, dr, f_syn) = sync_params(eps_e, eps_b, p_val, blast);
     if b <= 0.0 || n_blast <= 0.0 || dr <= 0.0 {
         return 0.0;
     }
 
-    let mut f = 1.0;
+    let mut f = f_syn;
     if gamma_m <= 1.0 {
         // Deep Newtonian correction: the original forward-shock formula
         if blast.shock_type == ShockType::Forward {
-            f = (p_val - 2.0) / (p_val - 1.0) * eps_e * MASS_P / MASS_E * (blast.gamma - 1.0);
+            f = (p_val - 2.0) / (p_val - 1.0) * eps_e * MASS_P / MASS_E * (blast.gamma_th - 1.0);
         } else {
             f = (p_val - 2.0) / (p_val - 1.0) * eps_e * (blast.gamma_th3 - 1.0) * MASS_P / MASS_E;
         }
@@ -101,7 +120,7 @@ pub fn sync_dnp(nu: f64, p: &Dict, blast: &Blast) -> f64 {
 
     let nu_m = 3.0 * E_CHARGE * b * gamma_m * gamma_m / 4.0 / PI / C_SPEED / MASS_E;
     let nu_c = 3.0 * E_CHARGE * b * gamma_c * gamma_c / 4.0 / PI / C_SPEED / MASS_E;
-    let e_p = 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f * n_blast
         / MASS_E
         / C_SPEED
         / C_SPEED;
@@ -125,6 +144,57 @@ pub fn sync_dnp(nu: f64, p: &Dict, blast: &Blast) -> f64 {
     };
 
     emissivity * dr
+}
+
+/// Smooth power-law synchrotron model (matches VegasAfterglow SmoothPowerLawSyn).
+///
+/// Uses smooth transitions between spectral segments instead of sharp breaks (Sari 1998).
+/// Sharpness parameter s=1 (hardcoded, matching VegasAfterglow).
+/// Factor of 2 normalization compensates for s=1 giving half the peak value at the first break.
+/// Includes exp(-ν/ν_M) high-energy cutoff from maximum electron Lorentz factor.
+pub fn sync_smooth(nu: f64, p: &Dict, blast: &Blast) -> f64 {
+    let eps_e = *p.get("eps_e").expect("sync_smooth requires 'eps_e'");
+    let eps_b = *p.get("eps_b").expect("sync_smooth requires 'eps_b'");
+    let p_val = *p.get("p").expect("sync_smooth requires 'p'");
+
+    let (gamma_m, gamma_c, b, n_blast, dr, f_syn) = sync_params(eps_e, eps_b, p_val, blast);
+    if b <= 0.0 || n_blast <= 0.0 || dr <= 0.0 {
+        return 0.0;
+    }
+
+    // Maximum electron Lorentz factor (post-crossing: cooled adiabatically)
+    let gamma_M = if blast.shock_type == ShockType::Reverse && blast.gamma_M_override > 0.0 {
+        blast.gamma_M_override
+    } else {
+        (6.0 * PI * E_CHARGE / (SIGMA_T * b)).sqrt()
+    };
+    let nu_M = 3.0 * E_CHARGE * b * gamma_M * gamma_M / 4.0 / PI / C_SPEED / MASS_E;
+
+    let nu_m = 3.0 * E_CHARGE * b * gamma_m * gamma_m / 4.0 / PI / C_SPEED / MASS_E;
+    let nu_c = 3.0 * E_CHARGE * b * gamma_c * gamma_c / 4.0 / PI / C_SPEED / MASS_E;
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f_syn * n_blast
+        / MASS_E
+        / C_SPEED
+        / C_SPEED;
+
+    let emissivity = if nu_m < nu_c {
+        // Slow cooling: ν^(1/3) → ν^(-(p-1)/2) at ν_m → ν^(-p/2) at ν_c
+        let x = nu / nu_m;
+        let xc = nu / nu_c;
+        // Δβ₁ = (p-1)/2 + 1/3 = (3p-1)/6 = p/2 - 1/6
+        let delta1 = (p_val - 1.0) / 2.0 + 1.0 / 3.0;
+        e_p * 2.0 * x.cbrt() / (1.0 + x.powf(delta1)) / (1.0 + xc.sqrt())
+    } else {
+        // Fast cooling: ν^(1/3) → ν^(-1/2) at ν_c → ν^(-p/2) at ν_m
+        let x = nu / nu_c;
+        let xm = nu / nu_m;
+        // Δβ₁ = 1/3 + 1/2 = 5/6
+        // Δβ₂ = (p-1)/2
+        e_p * 2.0 * x.cbrt() / (1.0 + x.powf(5.0 / 6.0)) / (1.0 + xm.powf((p_val - 1.0) / 2.0))
+    };
+
+    // High-energy cutoff: exp(-ν/ν_M)
+    emissivity * (-nu / nu_M).exp() * dr
 }
 
 /// Weighted average model: offset.
@@ -153,8 +223,10 @@ pub fn avg_sigma_y(_nu: f64, _p: &Dict, blast: &Blast) -> f64 {
 pub fn get_radiation_model(name: &str) -> Option<RadiationModel> {
     match name {
         "sync" => Some(sync),
+        "sync_smooth" => Some(sync_smooth),
         "sync_dnp" => Some(sync_dnp),
         "sync_ssa" => Some(crate::afterglow::ssa::sync_ssa),
+        "sync_ssa_smooth" => Some(crate::afterglow::ssa::sync_ssa_smooth),
         "sync_ssc" => Some(crate::afterglow::inverse_compton::sync_ssc),
         "sync_thermal" => Some(crate::afterglow::thermal::sync_thermal),
         "numeric" => Some(crate::afterglow::chang_cooper::sync_numeric),
@@ -228,6 +300,7 @@ mod tests {
             r: 1e17,
             beta: 0.99,
             gamma: 10.0,
+            gamma_th: 10.0,
             beta_th: 0.0,
             beta_r: 0.99,
             beta_f: 0.99,
@@ -240,6 +313,7 @@ mod tests {
             pressure: 1e-3,
             n_ambient: 1.0,
             dr: 1e15,
+            t_comv: 1e4, // t_lab / gamma
             ..Blast::default()
         }
     }
@@ -270,5 +344,29 @@ mod tests {
         let low = sync(1e14, &p, &blast);
         let high = sync(1e20, &p, &blast);
         assert!(low > high, "Emissivity should generally decrease at high frequencies");
+    }
+
+    #[test]
+    fn test_sync_smooth_positive_emissivity() {
+        let p = make_params();
+        let blast = make_blast();
+        let result = sync_smooth(1e18, &p, &blast);
+        assert!(result > 0.0, "sync_smooth emissivity should be positive");
+        assert!(result.is_finite());
+    }
+
+    #[test]
+    fn test_sync_smooth_greater_than_sync() {
+        // Smooth PL should give more flux than broken PL in power-law segments
+        let p = make_params();
+        let blast = make_blast();
+        let f_bpl = sync(1e18, &p, &blast);
+        let f_spl = sync_smooth(1e18, &p, &blast);
+        assert!(f_spl > f_bpl, "Smooth PL should exceed broken PL away from breaks: spl={:.4e}, bpl={:.4e}", f_spl, f_bpl);
+    }
+
+    #[test]
+    fn test_get_radiation_model_sync_smooth() {
+        assert!(get_radiation_model("sync_smooth").is_some());
     }
 }

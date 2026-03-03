@@ -275,8 +275,7 @@ pub fn sync_thermal(nu: f64, p: &Dict, blast: &Blast) -> f64 {
             ShockType::Forward => {
                 let e = blast.e_density;
                 let b = (8.0 * PI * eps_b * e).sqrt();
-                let gamma = blast.gamma;
-                (b, blast.n_blast, blast.t / gamma, gamma, blast.dr)
+                (b, blast.n_blast, blast.t_comv, blast.gamma_th, blast.dr)
             }
             ShockType::Reverse => {
                 (blast.b3, blast.n3, blast.t_comv, blast.gamma_th3, blast.dr)
@@ -383,6 +382,7 @@ mod tests {
             r: 1e17,
             beta: 0.99,
             gamma: 10.0,
+            gamma_th: 10.0,
             s: 0.5,
             doppler: 5.0,
             cos_theta_beta: 0.95,
@@ -391,6 +391,7 @@ mod tests {
             pressure: 1e-3,
             n_ambient: 1.0,
             dr: 1e15,
+            t_comv: 1e4,
             ..Blast::default()
         }
     }
@@ -601,6 +602,7 @@ mod tests {
         // Use a mildly relativistic shock where the effect is largest
         let mut blast = make_blast();
         blast.gamma = 2.0;
+        blast.gamma_th = 2.0;
         blast.beta = (1.0 - 1.0 / 4.0_f64).sqrt();
         blast.e_density = 1e-4;
         blast.n_blast = 10.0;

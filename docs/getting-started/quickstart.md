@@ -114,9 +114,12 @@ For backward compatibility, `spread=True` uses PDE and `spread=False` uses no-sp
 
 | Model string | Description |
 |--------------|-------------|
-| `"sync"` | Synchrotron (optically thin) |
+| `"sync"` | Synchrotron (optically thin, default) |
 | `"sync_ssa"` | Synchrotron + self-absorption |
 | `"sync_dnp"` | Deep Newtonian phase synchrotron |
+| `"sync_ssc"` | Synchrotron self-Compton (with Klein-Nishina) |
+| `"sync_thermal"` | Thermal + non-thermal electrons (MQ21) |
+| `"numeric"` | Full electron distribution evolution (Chang-Cooper) |
 
 ### CSM density profile
 
