@@ -25,8 +25,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install MkDocs and dependencies
-        run: pip install mkdocs-material
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build blastwave extension
+        run: |
+          pip install maturin numpy
+          cd rust && maturin build --release && pip install ../target/wheels/*.whl && cd ..
+
+      - name: Install blastwave Python package
+        run: pip install .
+
+      - name: Install docs dependencies
+        run: pip install mkdocs-material markdown-exec matplotlib scipy
 
       - name: Build docs
         run: mkdocs build --strict
