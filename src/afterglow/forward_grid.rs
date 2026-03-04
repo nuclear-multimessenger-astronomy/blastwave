@@ -3,6 +3,7 @@ use crate::hydro::tools::Tool;
 use crate::afterglow::blast::Blast;
 use crate::afterglow::eats::EATS;
 use crate::afterglow::models::{Dict, RadiationModel, CachedSyncParams};
+use rayon::prelude::*;
 
 /// Pre-computed forward-mapping grid for fast luminosity computation.
 ///
@@ -347,28 +348,29 @@ impl BlastGridCache {
         let (phis, dphis) = build_phi_grid(theta_v, theta_data, y_data);
         let theta_groups = detect_theta_groups(y_data, ntheta, bg_threshold);
 
-        let mut blasts_out = Vec::new();
-        let mut t_obs_out = Vec::new();
-        let mut domega_out = Vec::new();
-
+        // Build cell work items (sequential, cheap)
+        let mut cell_specs: Vec<(usize, usize)> = Vec::new();
         for j in 0..ntheta {
-            let cell_max_bg = y_data[2][j].iter().copied().fold(0.0f64, f64::max);
-            if cell_max_bg < bg_threshold {
+            if y_data[2][j].iter().copied().fold(0.0f64, f64::max) < bg_threshold {
                 continue;
             }
+            for phi_idx in 0..phis.len() {
+                cell_specs.push((j, phi_idx));
+            }
+        }
 
-            // Per-cell adaptive time indices
-            let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
-            let nt_sub = time_indices.len();
+        // Parallel compute (expensive derive_blast calls)
+        let cell_results: Vec<_> = cell_specs.par_iter()
+            .map(|&(j, phi_idx)| {
+                let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
+                let nt_sub = time_indices.len();
 
-            let theta = theta_data[j];
-            let cos_theta = theta.cos();
-            let sin_theta = theta.sin();
+                let theta = theta_data[j];
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+                let rep = theta_groups[j];
+                let phi = phis[phi_idx];
 
-            // Use representative cell's y_data for val extraction
-            let rep = theta_groups[j];
-
-            for (phi_idx, &phi) in phis.iter().enumerate() {
                 let mu = cos_theta * theta_v.cos() + sin_theta * phi.cos() * theta_v.sin();
 
                 let mut cell_blasts = Vec::with_capacity(nt_sub);
@@ -394,10 +396,19 @@ impl BlastGridCache {
                     cell_blasts.push(blast);
                 }
 
-                blasts_out.push(cell_blasts);
-                t_obs_out.push(cell_tobs);
-                domega_out.push(all_dcos[j] * dphis[phi_idx]);
-            }
+                let domega_val = all_dcos[j] * dphis[phi_idx];
+                (cell_blasts, cell_tobs, domega_val)
+            })
+            .collect();
+
+        // Unpack into output vectors (sequential, cheap)
+        let mut blasts_out = Vec::with_capacity(cell_results.len());
+        let mut t_obs_out = Vec::with_capacity(cell_results.len());
+        let mut domega_out = Vec::with_capacity(cell_results.len());
+        for (blasts, tobs, domega) in cell_results {
+            blasts_out.push(blasts);
+            t_obs_out.push(tobs);
+            domega_out.push(domega);
         }
 
         BlastGridCache {
@@ -429,27 +440,29 @@ impl BlastGridCache {
         let (phis, dphis) = build_phi_grid(theta_v, theta_data, y_data);
         let theta_groups = detect_theta_groups(y_data, ntheta, bg_threshold);
 
-        let mut blasts_out = Vec::new();
-        let mut t_obs_out = Vec::new();
-        let mut domega_out = Vec::new();
-        let mut sync_out = Vec::new();
-
+        // Build cell work items (sequential, cheap)
+        let mut cell_specs: Vec<(usize, usize)> = Vec::new();
         for j in 0..ntheta {
-            let cell_max_bg = y_data[2][j].iter().copied().fold(0.0f64, f64::max);
-            if cell_max_bg < bg_threshold {
+            if y_data[2][j].iter().copied().fold(0.0f64, f64::max) < bg_threshold {
                 continue;
             }
+            for phi_idx in 0..phis.len() {
+                cell_specs.push((j, phi_idx));
+            }
+        }
 
-            let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
-            let nt_sub = time_indices.len();
+        // Parallel compute (expensive derive_blast + sync param calls)
+        let cell_results: Vec<_> = cell_specs.par_iter()
+            .map(|&(j, phi_idx)| {
+                let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
+                let nt_sub = time_indices.len();
 
-            let theta = theta_data[j];
-            let cos_theta = theta.cos();
-            let sin_theta = theta.sin();
+                let theta = theta_data[j];
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+                let rep = theta_groups[j];
+                let phi = phis[phi_idx];
 
-            let rep = theta_groups[j];
-
-            for (phi_idx, &phi) in phis.iter().enumerate() {
                 let mu = cos_theta * theta_v.cos() + sin_theta * phi.cos() * theta_v.sin();
 
                 let mut cell_blasts = Vec::with_capacity(nt_sub);
@@ -479,11 +492,21 @@ impl BlastGridCache {
                     cell_blasts.push(blast);
                 }
 
-                blasts_out.push(cell_blasts);
-                t_obs_out.push(cell_tobs);
-                domega_out.push(all_dcos[j] * dphis[phi_idx]);
-                sync_out.push(cell_sync);
-            }
+                let domega_val = all_dcos[j] * dphis[phi_idx];
+                (cell_blasts, cell_tobs, domega_val, cell_sync)
+            })
+            .collect();
+
+        // Unpack into output vectors (sequential, cheap)
+        let mut blasts_out = Vec::with_capacity(cell_results.len());
+        let mut t_obs_out = Vec::with_capacity(cell_results.len());
+        let mut domega_out = Vec::with_capacity(cell_results.len());
+        let mut sync_out = Vec::with_capacity(cell_results.len());
+        for (blasts, tobs, domega, sync_params) in cell_results {
+            blasts_out.push(blasts);
+            t_obs_out.push(tobs);
+            domega_out.push(domega);
+            sync_out.push(sync_params);
         }
 
         BlastGridCache {
@@ -502,38 +525,44 @@ impl BlastGridCache {
         radiation_model: RadiationModel,
     ) -> ForwardGrid {
         let ncells = self.blasts.len();
+
+        let cells: Vec<_> = (0..ncells).into_par_iter()
+            .map(|j| {
+                let nt_sub = self.blasts[j].len();
+                let mut cell_dl = Vec::with_capacity(nt_sub);
+
+                for k in 0..nt_sub {
+                    let blast = &self.blasts[j][k];
+                    let nu_src = nu_z / blast.doppler;
+                    let intensity = radiation_model(nu_src, param, blast);
+                    cell_dl.push(
+                        intensity
+                            * blast.r * blast.r
+                            * blast.doppler * blast.doppler * blast.doppler,
+                    );
+                }
+
+                let lg2_t = to_lg2(&self.t_obs[j]);
+                let lg2_dl = to_lg2(&cell_dl);
+
+                let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
+                let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
+
+                (lg2_t, lg2_dl, self.domega[j], t_min, t_max)
+            })
+            .collect();
+
         let mut lg2_t_obs = Vec::with_capacity(ncells);
         let mut lg2_dl_domega = Vec::with_capacity(ncells);
         let mut domega = Vec::with_capacity(ncells);
         let mut lg2_t_min = Vec::with_capacity(ncells);
         let mut lg2_t_max = Vec::with_capacity(ncells);
-
-        for j in 0..ncells {
-            let nt_sub = self.blasts[j].len();
-            let mut cell_dl = Vec::with_capacity(nt_sub);
-
-            for k in 0..nt_sub {
-                let blast = &self.blasts[j][k];
-                let nu_src = nu_z / blast.doppler;
-                let intensity = radiation_model(nu_src, param, blast);
-                cell_dl.push(
-                    intensity
-                        * blast.r * blast.r
-                        * blast.doppler * blast.doppler * blast.doppler,
-                );
-            }
-
-            let lg2_t = to_lg2(&self.t_obs[j]);
-            let lg2_dl = to_lg2(&cell_dl);
-
-            let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
-            let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
-
-            lg2_t_obs.push(lg2_t);
-            lg2_dl_domega.push(lg2_dl);
-            domega.push(self.domega[j]);
-            lg2_t_min.push(t_min);
-            lg2_t_max.push(t_max);
+        for (t, dl, d, tmin, tmax) in cells {
+            lg2_t_obs.push(t);
+            lg2_dl_domega.push(dl);
+            domega.push(d);
+            lg2_t_min.push(tmin);
+            lg2_t_max.push(tmax);
         }
 
         ForwardGrid {
@@ -560,11 +589,6 @@ impl BlastGridCache {
             .expect("build_forward_grid_fast requires precompute_with_sync");
 
         let ncells = self.blasts.len();
-        let mut lg2_t_obs = Vec::with_capacity(ncells);
-        let mut lg2_dl_domega = Vec::with_capacity(ncells);
-        let mut domega = Vec::with_capacity(ncells);
-        let mut lg2_t_min = Vec::with_capacity(ncells);
-        let mut lg2_t_max = Vec::with_capacity(ncells);
 
         // Select the fast evaluation function
         let eval_fn: fn(f64, f64, &CachedSyncParams) -> f64 = match model_name {
@@ -574,33 +598,44 @@ impl BlastGridCache {
             _ => sync_from_cached,
         };
 
-        for j in 0..ncells {
-            let nt_sub = self.blasts[j].len();
-            let mut cell_dl = Vec::with_capacity(nt_sub);
+        let cells: Vec<_> = (0..ncells).into_par_iter()
+            .map(|j| {
+                let nt_sub = self.blasts[j].len();
+                let mut cell_dl = Vec::with_capacity(nt_sub);
 
-            for k in 0..nt_sub {
-                let blast = &self.blasts[j][k];
-                let cached = &cached_sync[j][k];
-                let nu_src = nu_z / blast.doppler;
-                let intensity = eval_fn(nu_src, p_val, cached);
-                cell_dl.push(
-                    intensity
-                        * blast.r * blast.r
-                        * blast.doppler * blast.doppler * blast.doppler,
-                );
-            }
+                for k in 0..nt_sub {
+                    let blast = &self.blasts[j][k];
+                    let cached = &cached_sync[j][k];
+                    let nu_src = nu_z / blast.doppler;
+                    let intensity = eval_fn(nu_src, p_val, cached);
+                    cell_dl.push(
+                        intensity
+                            * blast.r * blast.r
+                            * blast.doppler * blast.doppler * blast.doppler,
+                    );
+                }
 
-            let lg2_t = to_lg2(&self.t_obs[j]);
-            let lg2_dl = to_lg2(&cell_dl);
+                let lg2_t = to_lg2(&self.t_obs[j]);
+                let lg2_dl = to_lg2(&cell_dl);
 
-            let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
-            let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
+                let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
+                let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
 
-            lg2_t_obs.push(lg2_t);
-            lg2_dl_domega.push(lg2_dl);
-            domega.push(self.domega[j]);
-            lg2_t_min.push(t_min);
-            lg2_t_max.push(t_max);
+                (lg2_t, lg2_dl, self.domega[j], t_min, t_max)
+            })
+            .collect();
+
+        let mut lg2_t_obs = Vec::with_capacity(ncells);
+        let mut lg2_dl_domega = Vec::with_capacity(ncells);
+        let mut domega = Vec::with_capacity(ncells);
+        let mut lg2_t_min = Vec::with_capacity(ncells);
+        let mut lg2_t_max = Vec::with_capacity(ncells);
+        for (t, dl, d, tmin, tmax) in cells {
+            lg2_t_obs.push(t);
+            lg2_dl_domega.push(dl);
+            domega.push(d);
+            lg2_t_min.push(tmin);
+            lg2_t_max.push(tmax);
         }
 
         ForwardGrid {
@@ -636,28 +671,29 @@ impl ForwardGrid {
         let (phis, dphis) = build_phi_grid(theta_v, theta_data, y_data);
         let theta_groups = detect_theta_groups(y_data, ntheta, bg_threshold);
 
-        let mut lg2_t_obs = Vec::new();
-        let mut lg2_dl_domega = Vec::new();
-        let mut domega = Vec::new();
-        let mut lg2_t_min = Vec::new();
-        let mut lg2_t_max = Vec::new();
-
+        // Build cell work items (sequential, cheap)
+        let mut cell_specs: Vec<(usize, usize)> = Vec::new();
         for j in 0..ntheta {
-            let cell_max_bg = y_data[2][j].iter().copied().fold(0.0f64, f64::max);
-            if cell_max_bg < bg_threshold {
+            if y_data[2][j].iter().copied().fold(0.0f64, f64::max) < bg_threshold {
                 continue;
             }
+            for phi_idx in 0..phis.len() {
+                cell_specs.push((j, phi_idx));
+            }
+        }
 
-            let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
-            let nt_sub = time_indices.len();
+        // Parallel compute (expensive derive_blast + radiation model calls)
+        let cells: Vec<_> = cell_specs.par_iter()
+            .map(|&(j, phi_idx)| {
+                let time_indices = adaptive_time_indices(nt, y_data, j, t_data);
+                let nt_sub = time_indices.len();
 
-            let theta = theta_data[j];
-            let cos_theta = theta.cos();
-            let sin_theta = theta.sin();
+                let theta = theta_data[j];
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+                let rep = theta_groups[j];
+                let phi = phis[phi_idx];
 
-            let rep = theta_groups[j];
-
-            for (phi_idx, &phi) in phis.iter().enumerate() {
                 let mu = cos_theta * theta_v.cos() + sin_theta * phi.cos() * theta_v.sin();
 
                 let mut cell_tobs = Vec::with_capacity(nt_sub);
@@ -695,13 +731,24 @@ impl ForwardGrid {
 
                 let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
                 let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
+                let domega_val = all_dcos[j] * dphis[phi_idx];
 
-                lg2_t_obs.push(lg2_t);
-                lg2_dl_domega.push(lg2_dl);
-                domega.push(all_dcos[j] * dphis[phi_idx]);
-                lg2_t_min.push(t_min);
-                lg2_t_max.push(t_max);
-            }
+                (lg2_t, lg2_dl, domega_val, t_min, t_max)
+            })
+            .collect();
+
+        // Unpack into output vectors (sequential, cheap)
+        let mut lg2_t_obs = Vec::with_capacity(cells.len());
+        let mut lg2_dl_domega = Vec::with_capacity(cells.len());
+        let mut domega = Vec::with_capacity(cells.len());
+        let mut lg2_t_min = Vec::with_capacity(cells.len());
+        let mut lg2_t_max = Vec::with_capacity(cells.len());
+        for (t, dl, d, tmin, tmax) in cells {
+            lg2_t_obs.push(t);
+            lg2_dl_domega.push(dl);
+            domega.push(d);
+            lg2_t_min.push(tmin);
+            lg2_t_max.push(tmax);
         }
 
         ForwardGrid {

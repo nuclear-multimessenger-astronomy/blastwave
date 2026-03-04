@@ -123,7 +123,7 @@ def test_forward_flux_positive_and_finite():
 def test_forward_agrees_with_eats():
     """Forward-mapping should agree with EATS within 0.1 dex for on-axis tophat."""
     from blastwave import FluxDensity_tophat
-    fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD)
+    fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, flux_method="eats")
     fd_fwd = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -135,7 +135,7 @@ def test_forward_agrees_with_eats():
 def test_forward_gaussian():
     """Forward-mapping should work for Gaussian jet profile."""
     from blastwave import FluxDensity_gaussian
-    fd_eats = FluxDensity_gaussian(T_FWD, NU_FWD, P_FWD)
+    fd_eats = FluxDensity_gaussian(T_FWD, NU_FWD, P_FWD, flux_method="eats")
     fd_fwd = FluxDensity_gaussian(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -147,7 +147,7 @@ def test_forward_gaussian():
 def test_forward_powerlaw():
     """Forward-mapping should work for power-law jet profile."""
     from blastwave import FluxDensity_powerlaw
-    fd_eats = FluxDensity_powerlaw(T_FWD, NU_FWD, P_FWD)
+    fd_eats = FluxDensity_powerlaw(T_FWD, NU_FWD, P_FWD, flux_method="eats")
     fd_fwd = FluxDensity_powerlaw(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -162,7 +162,7 @@ def test_forward_offaxis_accuracy():
     P_off = {**P_FWD, "theta_v": 0.3}
     t_off = np.logspace(0, 2.5, 10) * 86400
 
-    fd_eats = FluxDensity_tophat(t_off, NU_FWD, P_off)
+    fd_eats = FluxDensity_tophat(t_off, NU_FWD, P_off, flux_method="eats")
     fd_fwd = FluxDensity_tophat(t_off, NU_FWD, P_off, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -180,7 +180,7 @@ def test_forward_ode_spread():
         grid=ForwardJetRes(P_FWD["theta_c"], 129),
         spread_mode="ode", tail=True,
     )
-    fd_eats = jet.FluxDensity(T_FWD, NU_FWD, P_FWD)
+    fd_eats = jet.FluxDensity(T_FWD, NU_FWD, P_FWD, flux_method="eats")
     fd_fwd = jet.FluxDensity(T_FWD, NU_FWD, P_FWD, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -192,7 +192,7 @@ def test_forward_ode_spread():
 def test_forward_no_spread():
     """Forward-mapping should work with no-spread mode."""
     from blastwave import FluxDensity_tophat
-    fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, spread=False)
+    fd_eats = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, spread=False, flux_method="eats")
     fd_fwd = FluxDensity_tophat(T_FWD, NU_FWD, P_FWD, spread=False, flux_method="forward")
 
     mask = (fd_eats > 0) & (fd_fwd > 0)
@@ -226,9 +226,9 @@ def test_magnetar_increases_late_time_flux():
     """Magnetar injection should produce higher flux than baseline at late times."""
     from blastwave import FluxDensity_tophat
     t_late = np.geomspace(1e5, 1e7, 20)
-    fd_base = FluxDensity_tophat(t_late, NU_MAG, P_MAG, spread=False, tmax=1e8)
+    fd_base = FluxDensity_tophat(t_late, NU_MAG, P_MAG, spread=False, tmax=1e8, flux_method="eats")
     fd_mag = FluxDensity_tophat(t_late, NU_MAG, P_MAG, spread=False, tmax=1e8,
-                                 magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0)
+                                 magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0, flux_method="eats")
 
     mask = (fd_base > 0) & (fd_mag > 0)
     assert np.any(mask), "Need at least some positive flux values"
@@ -269,8 +269,8 @@ def test_magnetar_ode_spread():
         magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0,
     )
 
-    fd_base = jet_base.FluxDensity(t_test, NU_MAG, P_MAG)
-    fd_mag = jet_mag.FluxDensity(t_test, NU_MAG, P_MAG)
+    fd_base = jet_base.FluxDensity(t_test, NU_MAG, P_MAG, flux_method="eats")
+    fd_mag = jet_mag.FluxDensity(t_test, NU_MAG, P_MAG, flux_method="eats")
 
     assert np.all(np.isfinite(fd_mag)), "ODE magnetar flux contains non-finite values"
     assert np.all(fd_mag > 0), "ODE magnetar flux contains non-positive values"
@@ -302,9 +302,9 @@ def test_magnetar_radio_band():
     from blastwave import FluxDensity_tophat
     nu_radio = 5e9  # 5 GHz
     t_test = np.geomspace(1e4, 1e7, 20)
-    fd_base = FluxDensity_tophat(t_test, nu_radio, P_MAG, spread=False, tmax=1e8)
+    fd_base = FluxDensity_tophat(t_test, nu_radio, P_MAG, spread=False, tmax=1e8, flux_method="eats")
     fd_mag = FluxDensity_tophat(t_test, nu_radio, P_MAG, spread=False, tmax=1e8,
-                                 magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0)
+                                 magnetar_l0=1e47, magnetar_t0=1e4, magnetar_q=2.0, flux_method="eats")
 
     assert np.all(np.isfinite(fd_mag)), "Radio magnetar flux contains non-finite values"
     assert np.all(fd_mag > 0), "Radio magnetar flux contains non-positive values"

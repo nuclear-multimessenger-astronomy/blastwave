@@ -664,8 +664,8 @@ impl PyJet {
 
         let has_rs = inner.include_reverse_shock && inner.ys_rs.is_some();
 
-        // Use forward-mapping when: method is "forward" and no reverse shock
-        let use_forward = inner.flux_method == "forward"
+        // Use forward-mapping by default; only use EATS if explicitly requested or reverse shock
+        let use_forward = inner.flux_method != "eats"
             && !has_rs;
 
         let n = broadcast_len(&[&tobs, &nu, &rtol], py)?;
