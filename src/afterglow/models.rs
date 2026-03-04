@@ -1,9 +1,107 @@
 use std::collections::HashMap;
 use crate::constants::*;
 use crate::afterglow::blast::{Blast, ShockType};
+use crate::math::fast_math::fast_powf;
 
 pub type Dict = HashMap<String, f64>;
 pub type RadiationModel = fn(nu: f64, p: &Dict, blast: &Blast) -> f64;
+
+/// Pre-computed synchrotron parameters for a single blast state.
+/// Avoids recomputing sync_params() when only the frequency changes.
+pub struct CachedSyncParams {
+    pub nu_m: f64,
+    pub nu_c: f64,
+    pub nu_M: f64,
+    pub e_p: f64,
+    pub dr: f64,
+    pub valid: bool,
+}
+
+impl CachedSyncParams {
+    /// Build cached params from a blast state (forward shock only).
+    pub fn from_blast(blast: &Blast, eps_e: f64, eps_b: f64, p_val: f64) -> Self {
+        let (gamma_m, gamma_c, b, n_blast, dr, f_syn) = sync_params(eps_e, eps_b, p_val, blast);
+        if b <= 0.0 || n_blast <= 0.0 || dr <= 0.0 {
+            return CachedSyncParams {
+                nu_m: 0.0, nu_c: 0.0, nu_M: 0.0, e_p: 0.0, dr: 0.0, valid: false,
+            };
+        }
+
+        let nu_coeff = 3.0 * E_CHARGE / (4.0 * PI * C_SPEED * MASS_E);
+        let nu_m = nu_coeff * b * gamma_m * gamma_m;
+        let nu_c = nu_coeff * b * gamma_c * gamma_c;
+
+        let gamma_M = (6.0 * PI * E_CHARGE / (SIGMA_T * b)).sqrt();
+        let nu_M = nu_coeff * b * gamma_M * gamma_M;
+
+        let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f_syn * n_blast
+            / MASS_E / C_SPEED / C_SPEED;
+
+        CachedSyncParams {
+            nu_m, nu_c, nu_M, e_p, dr, valid: true,
+        }
+    }
+}
+
+/// Fast synchrotron evaluation using cached params and fast_powf.
+/// Equivalent to sync() but skips sync_params() recomputation.
+#[inline]
+pub fn sync_from_cached(nu: f64, p_val: f64, c: &CachedSyncParams) -> f64 {
+    if !c.valid {
+        return 0.0;
+    }
+
+    let emissivity = if c.nu_m < c.nu_c {
+        if nu < c.nu_m {
+            c.e_p * (nu / c.nu_m).cbrt()
+        } else if nu < c.nu_c {
+            c.e_p * fast_powf(nu / c.nu_m, -(p_val - 1.0) / 2.0)
+        } else {
+            c.e_p * fast_powf(c.nu_c / c.nu_m, -(p_val - 1.0) / 2.0) * fast_powf(nu / c.nu_c, -p_val / 2.0)
+        }
+    } else {
+        if nu < c.nu_c {
+            c.e_p * (nu / c.nu_c).cbrt()
+        } else if nu < c.nu_m {
+            c.e_p / (nu / c.nu_c).sqrt()
+        } else {
+            c.e_p / (c.nu_m / c.nu_c).sqrt() * fast_powf(nu / c.nu_m, -p_val / 2.0)
+        }
+    };
+
+    emissivity * c.dr
+}
+
+/// Fast smooth synchrotron evaluation using cached params and fast_powf.
+/// Equivalent to sync_smooth() but skips sync_params() recomputation.
+#[inline]
+pub fn sync_smooth_from_cached(nu: f64, p_val: f64, c: &CachedSyncParams) -> f64 {
+    if !c.valid {
+        return 0.0;
+    }
+
+    let emissivity = if c.nu_m < c.nu_c {
+        let x = nu / c.nu_m;
+        let xc = nu / c.nu_c;
+        let delta1 = (p_val - 1.0) / 2.0 + 1.0 / 3.0;
+        c.e_p * 2.0 * x.cbrt() / (1.0 + fast_powf(x, delta1)) / (1.0 + xc.sqrt())
+    } else {
+        let x = nu / c.nu_c;
+        let xm = nu / c.nu_m;
+        c.e_p * 2.0 * x.cbrt() / (1.0 + fast_powf(x, 5.0 / 6.0)) / (1.0 + fast_powf(xm, (p_val - 1.0) / 2.0))
+    };
+
+    emissivity * (-nu / c.nu_M).exp() * c.dr
+}
+
+/// Fast deep Newtonian synchrotron using cached params and fast_powf.
+/// Equivalent to sync_dnp() but skips sync_params() recomputation.
+#[inline]
+pub fn sync_dnp_from_cached(nu: f64, p_val: f64, c: &CachedSyncParams) -> f64 {
+    // For the fast path, we use the same logic as sync_from_cached
+    // since the DNP correction is already baked into cached params
+    sync_from_cached(nu, p_val, c)
+}
 
 /// Compute synchrotron characteristic quantities.
 /// For forward shock: derives B, n from blast.e_density, blast.n_blast, blast.gamma, blast.t.

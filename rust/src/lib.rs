@@ -155,7 +155,7 @@ use blastwave::hydro::tools::Tool;
 use blastwave::afterglow::blast::Blast;
 use blastwave::afterglow::eats::EATS;
 use blastwave::afterglow::afterglow::Afterglow;
-use blastwave::afterglow::forward_grid::ForwardGrid;
+use blastwave::afterglow::forward_grid::{ForwardGrid, BlastGridCache};
 use blastwave::afterglow::ebl;
 
 #[pyfunction]
@@ -366,6 +366,7 @@ struct JetInner {
     afterglow: Afterglow,
     include_reverse_shock: bool,
     flux_method: String,
+    radiation_model_name: String,
 }
 
 // SAFETY: JetInner only contains owned, immutable-after-construction data.
@@ -421,6 +422,7 @@ impl PyJet {
             afterglow,
             include_reverse_shock: include_rs,
             flux_method: String::new(),
+            radiation_model_name: String::new(),
         });
         Ok(())
     }
@@ -544,6 +546,7 @@ impl PyJet {
             PyRuntimeError::new_err("solveJet() must be called first")
         })?;
         inner.afterglow.config_intensity(model_name);
+        inner.radiation_model_name = model_name.to_string();
         Ok(())
     }
 
@@ -661,9 +664,8 @@ impl PyJet {
 
         let has_rs = inner.include_reverse_shock && inner.ys_rs.is_some();
 
-        // Use forward-mapping when: method is "forward", on-axis, and no reverse shock
+        // Use forward-mapping when: method is "forward" and no reverse shock
         let use_forward = inner.flux_method == "forward"
-            && inner.afterglow.theta_v.abs() < 1e-6
             && !has_rs;
 
         let n = broadcast_len(&[&tobs, &nu, &rtol], py)?;
@@ -677,6 +679,10 @@ impl PyJet {
                 let theta_v = inner.afterglow.theta_v;
                 let radiation_model = inner.afterglow.radiation_model.unwrap();
                 let param = &inner.afterglow.param;
+                let model_name = &inner.radiation_model_name;
+
+                // Check if this model supports fast cached sync path
+                let use_fast_sync = matches!(model_name.as_str(), "sync" | "sync_smooth" | "sync_dnp");
 
                 py.allow_threads(|| {
                     // Fast path: single frequency (common case)
@@ -688,25 +694,99 @@ impl PyJet {
                             nu_z, theta_v, &inner.ys, &inner.ts, &inner.theta,
                             &inner.eats, &inner.tool, param, radiation_model,
                         );
-                        t_s.iter()
-                            .map(|&t| grid.luminosity(t / (1.0 + z)))
-                            .collect()
-                    } else {
-                        // Multi-frequency: one grid per unique nu
+
+                        // Sort times for batch interpolation
+                        let inv_1pz = 1.0 / (1.0 + z);
+                        let tobs_z: Vec<f64> = t_s.iter().map(|&t| t * inv_1pz).collect();
+                        let mut sort_idx: Vec<usize> = (0..n).collect();
+                        sort_idx.sort_unstable_by(|&a, &b| tobs_z[a].partial_cmp(&tobs_z[b]).unwrap_or(std::cmp::Ordering::Equal));
+                        let sorted_tobs: Vec<f64> = sort_idx.iter().map(|&i| tobs_z[i]).collect();
+
+                        // Batch interpolation: O(N_cells + N_queries)
+                        let sorted_results = grid.luminosity_batch(&sorted_tobs);
+
+                        // Unsort back to original order
                         let mut results = vec![0.0f64; n];
-                        let mut grids: HashMap<u64, ForwardGrid> = HashMap::new();
-                        for i in 0..n {
-                            let bits = nu_s[i].to_bits();
-                            let grid = grids.entry(bits).or_insert_with(|| {
-                                let nu_z = nu_s[i] * (1.0 + z);
-                                ForwardGrid::precompute(
-                                    nu_z, theta_v, &inner.ys, &inner.ts,
-                                    &inner.theta, &inner.eats, &inner.tool,
-                                    param, radiation_model,
-                                )
-                            });
-                            results[i] = grid.luminosity(t_s[i] / (1.0 + z));
+                        for (si, &orig_idx) in sort_idx.iter().enumerate() {
+                            results[orig_idx] = sorted_results[si];
                         }
+                        results
+                    } else {
+                        // Multi-frequency: precompute blast states once,
+                        // then build ForwardGrids in parallel per unique nu
+
+                        // Collect unique frequencies
+                        let mut unique_bits: Vec<u64> = nu_s.iter().map(|&v| v.to_bits()).collect();
+                        unique_bits.sort_unstable();
+                        unique_bits.dedup();
+
+                        let grids: HashMap<u64, ForwardGrid> = if use_fast_sync {
+                            // Fast path: use cached sync params
+                            let eps_e = *param.get("eps_e").unwrap();
+                            let eps_b = *param.get("eps_b").unwrap();
+                            let p_val = *param.get("p").unwrap();
+
+                            let cache = BlastGridCache::precompute_with_sync(
+                                theta_v, &inner.ys, &inner.ts, &inner.theta,
+                                &inner.eats, &inner.tool, eps_e, eps_b, p_val,
+                            );
+
+                            unique_bits.par_iter()
+                                .map(|&bits| {
+                                    let nu = f64::from_bits(bits);
+                                    let nu_z = nu * (1.0 + z);
+                                    let grid = cache.build_forward_grid_fast(nu_z, p_val, model_name);
+                                    (bits, grid)
+                                })
+                                .collect::<Vec<_>>().into_iter().collect()
+                        } else {
+                            let cache = BlastGridCache::precompute(
+                                theta_v, &inner.ys, &inner.ts, &inner.theta,
+                                &inner.eats, &inner.tool,
+                            );
+
+                            unique_bits.par_iter()
+                                .map(|&bits| {
+                                    let nu = f64::from_bits(bits);
+                                    let nu_z = nu * (1.0 + z);
+                                    let grid = cache.build_forward_grid(nu_z, param, radiation_model);
+                                    (bits, grid)
+                                })
+                                .collect::<Vec<_>>().into_iter().collect()
+                        };
+
+                        // Group queries by frequency, batch per grid
+                        let inv_1pz = 1.0 / (1.0 + z);
+                        let mut results = vec![0.0f64; n];
+
+                        for &bits in &unique_bits {
+                            let grid = &grids[&bits];
+                            // Collect indices for this frequency
+                            let indices: Vec<usize> = (0..n)
+                                .filter(|&i| nu_s[i].to_bits() == bits)
+                                .collect();
+
+                            if indices.is_empty() {
+                                continue;
+                            }
+
+                            // Sort by time for batch interpolation
+                            let mut sorted_indices = indices.clone();
+                            sorted_indices.sort_unstable_by(|&a, &b| {
+                                t_s[a].partial_cmp(&t_s[b]).unwrap_or(std::cmp::Ordering::Equal)
+                            });
+
+                            let sorted_tobs: Vec<f64> = sorted_indices.iter()
+                                .map(|&i| t_s[i] * inv_1pz)
+                                .collect();
+
+                            let batch_results = grid.luminosity_batch(&sorted_tobs);
+
+                            for (si, &orig_idx) in sorted_indices.iter().enumerate() {
+                                results[orig_idx] = batch_results[si];
+                            }
+                        }
+
                         results
                     }
                 })
