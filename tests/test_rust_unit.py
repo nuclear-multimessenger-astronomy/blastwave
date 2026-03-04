@@ -156,8 +156,8 @@ def test_forward_powerlaw():
     assert max_diff < 0.1, f"Power-law forward vs EATS max deviation: {max_diff:.4f} dex"
 
 
-def test_forward_offaxis_fallback():
-    """Off-axis should silently fall back to EATS (no error, same result)."""
+def test_forward_offaxis_accuracy():
+    """Off-axis forward-grid should agree with EATS within 0.1 dex."""
     from blastwave import FluxDensity_tophat
     P_off = {**P_FWD, "theta_v": 0.3}
     t_off = np.logspace(0, 2.5, 10) * 86400
@@ -165,9 +165,10 @@ def test_forward_offaxis_fallback():
     fd_eats = FluxDensity_tophat(t_off, NU_FWD, P_off)
     fd_fwd = FluxDensity_tophat(t_off, NU_FWD, P_off, flux_method="forward")
 
-    # Should be identical (both use EATS for off-axis)
-    np.testing.assert_allclose(fd_fwd, fd_eats, rtol=1e-10,
-                               err_msg="Off-axis forward should fall back to EATS identically")
+    mask = (fd_eats > 0) & (fd_fwd > 0)
+    log_diff = np.abs(np.log10(fd_fwd[mask]) - np.log10(fd_eats[mask]))
+    max_diff = np.max(log_diff)
+    assert max_diff < 0.1, f"Off-axis forward vs EATS max deviation: {max_diff:.4f} dex (limit 0.1)"
 
 
 def test_forward_ode_spread():
