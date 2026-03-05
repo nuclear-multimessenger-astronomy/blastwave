@@ -141,7 +141,7 @@ class Jet:
         return self._jet.calculateEATS(t, theta, phi, theta_v, z)
 
     # specific intensity at jet sphreical coordinate [cgs] Could be useful for debug
-    def Intensity(self, t, nu, theta, phi, P, model="sync"):
+    def Intensity(self, t, nu, theta, phi, P, model="sync_ssa_smooth"):
         # config parameters
         self._jet.configParameters(P)
 
@@ -156,7 +156,7 @@ class Jet:
         return I
     
     # flux density [mJy]
-    def FluxDensity(self, t, nu, P, model="sync", rtol=1e-3, max_iter=100, force_return=True, flux_method=None, ebl=False):
+    def FluxDensity(self, t, nu, P, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, flux_method=None, ebl=False):
         # config parameters
         self._jet.configParameters(P)
 
@@ -183,7 +183,7 @@ class Jet:
         return flux
     
     # flux density from forward shock only [mJy]
-    def FluxDensity_forward(self, t, nu, P, model="sync", rtol=1e-3, max_iter=100, force_return=True, ebl=False):
+    def FluxDensity_forward(self, t, nu, P, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, ebl=False):
         self._jet.configParameters(P)
         if isinstance(model, str):
             self._jet.configIntensity(model)
@@ -200,7 +200,7 @@ class Jet:
         return flux
 
     # flux density from reverse shock only [mJy]
-    def FluxDensity_reverse(self, t, nu, P, model="sync", rtol=1e-3, max_iter=100, force_return=True, ebl=False):
+    def FluxDensity_reverse(self, t, nu, P, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, ebl=False):
         self._jet.configParameters(P)
         if isinstance(model, str):
             self._jet.configIntensity(model)
@@ -217,7 +217,7 @@ class Jet:
         return flux
 
     # flux [erg/s/cm^2]
-    def Flux(self, t, nu1, nu2, P, model="sync", rtol=1e-3, max_iter=100, force_return=True):
+    def Flux(self, t, nu1, nu2, P, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True):
         # config parameters
         self._jet.configParameters(P)
 
@@ -234,7 +234,7 @@ class Jet:
         
         return L * (1 + P["z"]) / 4 / np.pi / (P["d"] * _MPC) ** 2
     
-    def WeightedAverage(self, t, nu, P, radiation_model="sync", average_model="offset", rtol=1e-3, max_iter=100, force_return=True):
+    def WeightedAverage(self, t, nu, P, radiation_model="sync_ssa_smooth", average_model="offset", rtol=1e-3, max_iter=100, force_return=True):
         # config parameters
         self._jet.configParameters(P)
 

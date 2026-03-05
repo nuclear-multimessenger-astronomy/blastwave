@@ -2,7 +2,7 @@ from ._blastwave import Jet
 from ._grid import *
 from ._jet_type import *
 
-def FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
+def FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
     # Extract RS parameters if provided
     rs_kwargs = {}
     if include_rs:
@@ -50,7 +50,7 @@ def FluxDensity_tophat(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1,
 
     return flux
 
-def FluxDensity_gaussian(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
+def FluxDensity_gaussian(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
     # Extract RS parameters if provided
     rs_kwargs = {}
     if include_rs:
@@ -98,7 +98,7 @@ def FluxDensity_gaussian(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=
 
     return flux
 
-def FluxDensity_spherical(t, nu, P, k=2.0, tmin=10.0, tmax=1e10, ntheta=17, cal_level=1, model="sync", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
+def FluxDensity_spherical(t, nu, P, k=2.0, tmin=10.0, tmax=1e10, ntheta=17, cal_level=1, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
     # Extract RS parameters if provided
     rs_kwargs = {}
     if include_rs:
@@ -147,7 +147,7 @@ def FluxDensity_spherical(t, nu, P, k=2.0, tmin=10.0, tmax=1e10, ntheta=17, cal_
 
     return flux
 
-def FluxDensity_powerlaw(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
+def FluxDensity_powerlaw(t, nu, P, tmin=10.0, tmax=1e10, spread=True, cal_level=1, cfl=0.9, model="sync_ssa_smooth", rtol=1e-3, max_iter=100, force_return=True, include_rs=False, rs_params=None, flux_method=None, magnetar_l0=None, magnetar_t0=None, magnetar_q=None, magnetar_ts=None, ebl=False):
     # Extract RS parameters if provided
     rs_kwargs = {}
     if include_rs:

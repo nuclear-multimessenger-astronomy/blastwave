@@ -261,13 +261,26 @@ pub fn sync_ssa(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         compute_gamma_c(t_comv, b, y)
     };
 
+    // Cyclotron correction for reverse shock (matches VegasAfterglow)
+    let f_syn = if blast.shock_type == ShockType::Reverse && gamma_m > 1.0 {
+        if p_val <= 3.0 {
+            (gamma_m - 1.0) / gamma_m
+        } else {
+            ((gamma_m - 1.0) / gamma_m).powf((p_val - 1.0) / 2.0)
+        }
+    } else if blast.shock_type == ShockType::Reverse {
+        0.0
+    } else {
+        1.0
+    };
+
     // Characteristic frequencies
     let nu_m = compute_syn_freq(gamma_m, b);
     let nu_c = compute_syn_freq(gamma_c, b);
     let nu_M = compute_syn_freq(gamma_m_max, b);
 
     // Peak specific emissivity (same Sari 1998 formula as sync model)
-    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f_syn * n_blast
         / MASS_E / C_SPEED / C_SPEED;
 
     // Optically thin spectrum (identical to sync model)
@@ -363,11 +376,24 @@ pub fn sync_ssa_smooth(nu: f64, p: &Dict, blast: &Blast) -> f64 {
         compute_gamma_c(t_comv, b, y)
     };
 
+    // Cyclotron correction for reverse shock (matches VegasAfterglow)
+    let f_syn = if blast.shock_type == ShockType::Reverse && gamma_m > 1.0 {
+        if p_val <= 3.0 {
+            (gamma_m - 1.0) / gamma_m
+        } else {
+            ((gamma_m - 1.0) / gamma_m).powf((p_val - 1.0) / 2.0)
+        }
+    } else if blast.shock_type == ShockType::Reverse {
+        0.0
+    } else {
+        1.0
+    };
+
     let nu_m = compute_syn_freq(gamma_m, b);
     let nu_c = compute_syn_freq(gamma_c, b);
     let nu_M = compute_syn_freq(gamma_m_max, b);
 
-    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * n_blast
+    let e_p = PITCH_ANGLE_AVG * 3.0_f64.sqrt() * E_CHARGE * E_CHARGE * E_CHARGE * b * f_syn * n_blast
         / MASS_E / C_SPEED / C_SPEED;
 
     // Smooth power-law optically thin emissivity (s=1 transitions, factor-of-2 norm)
