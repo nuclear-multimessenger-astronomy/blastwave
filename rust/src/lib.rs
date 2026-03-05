@@ -664,9 +664,8 @@ impl PyJet {
 
         let has_rs = inner.include_reverse_shock && inner.ys_rs.is_some();
 
-        // Use forward-mapping by default; only use EATS if explicitly requested or reverse shock
-        let use_forward = inner.flux_method != "eats"
-            && !has_rs;
+        // Use forward-mapping by default; only use EATS if explicitly requested
+        let use_forward = inner.flux_method != "eats";
 
         let n = broadcast_len(&[&tobs, &nu, &rtol], py)?;
         if let Some(n) = n {
@@ -710,6 +709,27 @@ impl PyJet {
                         for (si, &orig_idx) in sort_idx.iter().enumerate() {
                             results[orig_idx] = sorted_results[si];
                         }
+
+                        // Add reverse shock contribution if enabled
+                        if has_rs {
+                            let rs_grid = ForwardGrid::precompute_reverse(
+                                nu_z, theta_v, &inner.ys,
+                                inner.ys_rs.as_ref().unwrap(),
+                                &inner.ts, &inner.theta,
+                                &inner.eats, &inner.tool,
+                                &inner.afterglow.param_rs,
+                                radiation_model,
+                            );
+                            let sorted_rs = rs_grid.luminosity_batch(&sorted_tobs);
+                            // RS cutoff at 10 days (864000 s) in observer frame
+                            let rs_cutoff = 864000.0 * inv_1pz;
+                            for (si, &orig_idx) in sort_idx.iter().enumerate() {
+                                if sorted_tobs[si] <= rs_cutoff {
+                                    results[orig_idx] += sorted_rs[si];
+                                }
+                            }
+                        }
+
                         results
                     } else {
                         // Multi-frequency: precompute blast states once,
@@ -755,8 +775,30 @@ impl PyJet {
                                 .collect::<Vec<_>>().into_iter().collect()
                         };
 
+                        // Build RS grids if needed
+                        let rs_grids: Option<HashMap<u64, ForwardGrid>> = if has_rs {
+                            Some(unique_bits.par_iter()
+                                .map(|&bits| {
+                                    let nu = f64::from_bits(bits);
+                                    let nu_z = nu * (1.0 + z);
+                                    let grid = ForwardGrid::precompute_reverse(
+                                        nu_z, theta_v, &inner.ys,
+                                        inner.ys_rs.as_ref().unwrap(),
+                                        &inner.ts, &inner.theta,
+                                        &inner.eats, &inner.tool,
+                                        &inner.afterglow.param_rs,
+                                        radiation_model,
+                                    );
+                                    (bits, grid)
+                                })
+                                .collect::<Vec<_>>().into_iter().collect())
+                        } else {
+                            None
+                        };
+
                         // Group queries by frequency, batch per grid
                         let inv_1pz = 1.0 / (1.0 + z);
+                        let rs_cutoff = 864000.0 * inv_1pz; // 10 day RS cutoff
                         let mut results = vec![0.0f64; n];
 
                         for &bits in &unique_bits {
@@ -784,6 +826,17 @@ impl PyJet {
 
                             for (si, &orig_idx) in sorted_indices.iter().enumerate() {
                                 results[orig_idx] = batch_results[si];
+                            }
+
+                            // Add RS contribution
+                            if let Some(ref rs_map) = rs_grids {
+                                let rs_grid = &rs_map[&bits];
+                                let rs_results = rs_grid.luminosity_batch(&sorted_tobs);
+                                for (si, &orig_idx) in sorted_indices.iter().enumerate() {
+                                    if sorted_tobs[si] <= rs_cutoff {
+                                        results[orig_idx] += rs_results[si];
+                                    }
+                                }
                             }
                         }
 
@@ -828,22 +881,30 @@ impl PyJet {
             let result = if use_forward {
                 let z = inner.afterglow.z;
                 let nu_z = nu_val * (1.0 + z);
+                let radiation_model = inner.afterglow.radiation_model.unwrap();
                 let grid = ForwardGrid::precompute(
                     nu_z, inner.afterglow.theta_v,
                     &inner.ys, &inner.ts, &inner.theta,
                     &inner.eats, &inner.tool,
                     &inner.afterglow.param,
-                    inner.afterglow.radiation_model.unwrap(),
+                    radiation_model,
                 );
-                grid.luminosity(t_val / (1.0 + z))
-            } else if has_rs {
-                inner.afterglow.luminosity_total(
-                    t_val, nu_val, rtol_val,
-                    max_iter as usize, force_return,
-                    &inner.eats, &inner.ys,
-                    inner.ys_rs.as_ref().unwrap(),
-                    &inner.ts, &inner.theta, &inner.tool,
-                )
+                let tobs_z = t_val / (1.0 + z);
+                let mut lum = grid.luminosity(tobs_z);
+                // Add RS contribution if enabled and within 1 day
+                if has_rs && t_val <= 86400.0 {
+                    let rs_grid = ForwardGrid::precompute_reverse(
+                        nu_z, inner.afterglow.theta_v,
+                        &inner.ys,
+                        inner.ys_rs.as_ref().unwrap(),
+                        &inner.ts, &inner.theta,
+                        &inner.eats, &inner.tool,
+                        &inner.afterglow.param_rs,
+                        radiation_model,
+                    );
+                    lum += rs_grid.luminosity(tobs_z);
+                }
+                lum
             } else {
                 inner.afterglow.luminosity(
                     t_val, nu_val, rtol_val,

@@ -118,7 +118,7 @@ pub fn minimization_range<F: FnMut(f64) -> f64>(
     let argmin = f_ini
         .iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .unwrap()
         .0;
 
@@ -141,7 +141,7 @@ pub fn minimization<F: FnMut(f64) -> f64>(f: &mut F, x_ini: &[f64], atol: f64, m
     let argmin = f_ini
         .iter()
         .enumerate()
-        .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .unwrap()
         .0;
 

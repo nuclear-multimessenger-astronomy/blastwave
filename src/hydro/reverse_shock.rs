@@ -1027,6 +1027,8 @@ pub fn solve_reverse_shock_cell(
 
     while save_idx < save_times.len() {
         if n_steps >= MAX_ODE_STEPS { break; }
+        // Bail early if no progress after 50K steps (ultra-relativistic stiffness)
+        if n_steps >= 50_000 && save_idx == 0 { break; }
 
         // Estimate retarded-time step to reach the next lab-time save point.
         // dt_lab/dt_ret = 1 + (dr/dt_ret)/c = 1 + u*(G+u), so
@@ -1082,6 +1084,7 @@ pub fn solve_reverse_shock_cell(
             dt = new_dt;
         }
     }
+
 
     // Fill remaining times with last state (for safety)
     while save_idx < save_times.len() {

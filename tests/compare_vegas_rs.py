@@ -42,7 +42,7 @@ mJy_cgs = 1e-26  # 1 mJy in erg/cm²/s/Hz
 from VegasAfterglow import TophatJet, ISM, Observer, Radiation, Model
 
 jet_v   = TophatJet(theta_c=theta_c, E_iso=E_iso, Gamma0=Gamma0,
-                    duration=duration)
+                    duration=duration, spreading=False)
 medium  = ISM(n_ism=n0)
 obs     = Observer(lumi_dist=d_Mpc * MPC_cm, z=z, theta_obs=theta_v)
 rad_fwd = Radiation(eps_e=eps_e, eps_B=eps_B, p=p_val)

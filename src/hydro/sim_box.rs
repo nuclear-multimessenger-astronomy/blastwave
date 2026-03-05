@@ -2,6 +2,7 @@ use crate::constants::*;
 use crate::hydro::config::{JetConfig, SpreadMode};
 use crate::hydro::tools::Tool;
 use crate::hydro::reverse_shock::{self, FRShockEqn, NVAR_RS};
+use rayon::prelude::*;
 
 const C2: f64 = C_SPEED * C_SPEED;
 
@@ -197,59 +198,59 @@ impl SimBox {
         let tmin = self.ts[0];
         let tmax = *self.ts.last().unwrap();
 
-        // Initialize RS output: [NVAR_RS][ntheta][nt]
+        // Parallel RS solve over theta cells
+        let ys_ref = &self.ys;
+        let ts_ref = &self.ts;
+        let cell_results: Vec<(Vec<Vec<f64>>, usize)> = (0..ntheta).into_par_iter()
+            .map(|j| {
+                let mej = ys_ref[1][j][0];
+                let bg_sq = ys_ref[2][j][0];
+                let gamma4 = (bg_sq + 1.0).sqrt();
+
+                if gamma4 < 1.5 {
+                    return (vec![vec![0.0; nt]; NVAR_RS], nt);
+                }
+
+                let eps4_init = (gamma4 - 1.0) * mej * C_SPEED * C_SPEED + mej * C_SPEED * C_SPEED;
+
+                let mut eqn = FRShockEqn::new(
+                    config.nwind,
+                    config.nism,
+                    config.k,
+                    gamma4,
+                    mej,
+                    eps4_init,
+                    config.sigma,
+                    0.1,
+                    0.01,
+                    2.3,
+                    config.eps_e_rs,
+                    config.eps_b_rs,
+                    config.p_rs,
+                    config.duration,
+                    config.t0_injection,
+                    config.l_injection,
+                    config.m_dot_injection,
+                    config.rtol,
+                );
+
+                let (cell_rs, cross_idx) = reverse_shock::solve_reverse_shock_cell(
+                    &mut eqn,
+                    tmin,
+                    tmax,
+                    config.rtol.max(1e-4),
+                    ts_ref,
+                );
+
+                (cell_rs, cross_idx)
+            })
+            .collect();
+
+        // Unpack parallel results into [NVAR_RS][ntheta][nt] layout
         let mut rs_data: Vec<Vec<Vec<f64>>> = vec![vec![Vec::new(); ntheta]; NVAR_RS];
         let mut crossing_indices = vec![nt; ntheta];
-
-        for j in 0..ntheta {
-            // Get initial ejecta properties for this theta cell
-            let mej = self.ys[1][j][0]; // initial Mej per sr
-            let bg_sq = self.ys[2][j][0]; // initial beta_gamma_sq
-            let gamma4 = (bg_sq + 1.0).sqrt();
-
-            // Skip cells with negligible ejecta Lorentz factor — no meaningful RS
-            if gamma4 < 1.5 {
-                for var in 0..NVAR_RS {
-                    rs_data[var][j] = vec![0.0; nt];
-                }
-                continue;
-            }
-
-            // Initial ejecta energy (kinetic + rest mass)
-            let eps4_init = (gamma4 - 1.0) * mej * C_SPEED * C_SPEED + mej * C_SPEED * C_SPEED;
-
-            let mut eqn = FRShockEqn::new(
-                config.nwind,
-                config.nism,
-                config.k,
-                gamma4,
-                mej,
-                eps4_init,
-                config.sigma,
-                0.1,  // eps_e_fwd placeholder
-                0.01, // eps_b_fwd placeholder
-                2.3,  // p_fwd placeholder
-                config.eps_e_rs,
-                config.eps_b_rs,
-                config.p_rs,
-                config.duration,
-                config.t0_injection,
-                config.l_injection,
-                config.m_dot_injection,
-                config.rtol,
-            );
-
-            let (cell_rs, cross_idx) = reverse_shock::solve_reverse_shock_cell(
-                &mut eqn,
-                tmin,
-                tmax,
-                config.rtol.max(1e-4), // RS ODE doesn't need ultra-tight tolerance
-                &self.ts,
-            );
-
+        for (j, (cell_rs, cross_idx)) in cell_results.into_iter().enumerate() {
             crossing_indices[j] = cross_idx;
-
-            // Store data: cell_rs[var][it] → rs_data[var][j][it]
             for var in 0..NVAR_RS {
                 rs_data[var][j] = cell_rs[var].clone();
             }

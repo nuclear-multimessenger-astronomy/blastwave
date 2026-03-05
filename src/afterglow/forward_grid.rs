@@ -1,6 +1,6 @@
 use crate::constants::*;
 use crate::hydro::tools::Tool;
-use crate::afterglow::blast::Blast;
+use crate::afterglow::blast::{Blast, ShockType};
 use crate::afterglow::eats::EATS;
 use crate::afterglow::models::{Dict, RadiationModel, CachedSyncParams};
 use rayon::prelude::*;
@@ -744,6 +744,205 @@ impl ForwardGrid {
         let mut lg2_t_min = Vec::with_capacity(cells.len());
         let mut lg2_t_max = Vec::with_capacity(cells.len());
         for (t, dl, d, tmin, tmax) in cells {
+            lg2_t_obs.push(t);
+            lg2_dl_domega.push(dl);
+            domega.push(d);
+            lg2_t_min.push(tmin);
+            lg2_t_max.push(tmax);
+        }
+
+        ForwardGrid {
+            lg2_t_obs,
+            lg2_dl_domega,
+            domega,
+            lg2_t_min,
+            lg2_t_max,
+        }
+    }
+
+    /// Pre-compute a forward grid for the reverse shock contribution.
+    ///
+    /// Builds shadow y_data from rs_data (same as solve_blast_reverse), then
+    /// forward-maps using derive_blast + RS-specific field patching.
+    /// The result can be added to the FS ForwardGrid luminosity.
+    pub fn precompute_reverse(
+        nu_z: f64,
+        theta_v: f64,
+        y_data: &[Vec<Vec<f64>>],
+        rs_data: &[Vec<Vec<f64>>],
+        t_data: &[f64],
+        theta_data: &[f64],
+        eats: &EATS,
+        tool: &Tool,
+        param_rs: &Dict,
+        radiation_model: RadiationModel,
+    ) -> Self {
+        let ntheta = theta_data.len();
+        let nt = t_data.len();
+
+        // Build shadow y_data from RS ODE data (same as solve_blast_reverse)
+        let mut rs_y: Vec<Vec<Vec<f64>>> = vec![vec![vec![0.0; nt]; ntheta]; 7];
+        for j in 0..ntheta {
+            for k in 0..nt {
+                let gamma = rs_data[0][j][k].max(1.0);
+                let beta_gamma_sq = gamma * gamma - 1.0;
+                rs_y[0][j][k] = rs_data[11][j][k]; // msw
+                rs_y[2][j][k] = beta_gamma_sq;
+                rs_y[4][j][k] = rs_data[1][j][k];  // r
+                rs_y[5][j][k] = rs_data[12][j][k]; // u2_th
+                rs_y[6][j][k] = rs_data[5][j][k];  // t_comv
+            }
+        }
+
+        let all_dcos = compute_dcos_theta(theta_data);
+        let bg_threshold = compute_bg_threshold(&rs_y, ntheta);
+        let (phis, dphis) = build_phi_grid(theta_v, theta_data, &rs_y);
+        let theta_groups = detect_theta_groups(&rs_y, ntheta, bg_threshold);
+
+        // Check which theta cells have RS activity (gamma > 1.001)
+        let has_rs: Vec<bool> = (0..ntheta)
+            .map(|j| rs_data[0][j].iter().any(|&g| g > 1.001))
+            .collect();
+
+        let mut cell_specs: Vec<(usize, usize)> = Vec::new();
+        for j in 0..ntheta {
+            if !has_rs[j] {
+                continue;
+            }
+            if rs_y[2][j].iter().copied().fold(0.0f64, f64::max) < bg_threshold {
+                continue;
+            }
+            for phi_idx in 0..phis.len() {
+                cell_specs.push((j, phi_idx));
+            }
+        }
+
+        let cells: Vec<_> = cell_specs.par_iter()
+            .map(|&(j, phi_idx)| {
+                let time_indices = adaptive_time_indices(nt, &rs_y, j, t_data);
+                let nt_sub = time_indices.len();
+
+                let theta = theta_data[j];
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+                let rep = theta_groups[j];
+                let phi = phis[phi_idx];
+
+                let mu = cos_theta * theta_v.cos() + sin_theta * phi.cos() * theta_v.sin();
+
+                let mut cell_tobs = Vec::with_capacity(nt_sub);
+                let mut cell_dl = Vec::with_capacity(nt_sub);
+
+                // Find crossing time for adiabatic cooling
+                let t_crossing = if rs_data.len() > 13 {
+                    rs_data[13][j].iter().copied().fold(0.0f64, f64::max)
+                } else {
+                    0.0
+                };
+
+                for &k in &time_indices {
+                    let r = rs_y[4][j][k];
+                    if r <= 0.0 { continue; }
+                    cell_tobs.push(t_data[k] - r * mu / C_SPEED);
+
+                    let nvar = rs_y.len();
+                    let val = [
+                        rs_y[0][rep][k],
+                        rs_y[1][rep][k],
+                        rs_y[2][rep][k],
+                        rs_y[3][rep][k],
+                        rs_y[4][rep][k],
+                        rs_y[5][rep][k],
+                        if nvar > 6 { rs_y[6][rep][k] } else { 0.0 },
+                        t_data[k],
+                    ];
+
+                    let mut blast = Blast::default();
+                    eats.derive_blast(theta, phi, theta_v, &val, tool, &mut blast);
+
+                    // Patch RS-specific fields
+                    blast.shock_type = ShockType::Reverse;
+                    blast.gamma_th3 = rs_data[6][j][k];
+                    blast.b3 = rs_data[7][j][k];
+                    blast.n3 = rs_data[8][j][k];
+                    blast.t_comv = rs_data[5][j][k];
+                    blast.gamma34 = rs_data[9][j][k];
+                    blast.n4_upstream = rs_data[10][j][k];
+
+                    // Post-crossing adiabatic cooling
+                    if t_crossing > 0.0 && blast.t > t_crossing && rs_data.len() > 13 {
+                        // Find crossing-time values by interpolation
+                        let t_cross_clamped = t_crossing.min(t_data[nt - 1]).max(t_data[0]);
+                        let t_idx = tool.find_index(t_data, t_cross_clamped);
+                        let interp_at_cross = |var: usize| -> f64 {
+                            if var >= rs_data.len() { return 0.0; }
+                            let y1 = rs_data[var][j][t_idx.0];
+                            let y2 = rs_data[var][j][t_idx.1];
+                            if t_idx.0 == t_idx.1 { y1 } else {
+                                tool.linear(t_crossing, t_data[t_idx.0], t_data[t_idx.1], y1, y2)
+                            }
+                        };
+                        let gamma_th3_x = interp_at_cross(6);
+                        let b3_x = interp_at_cross(7);
+                        let t_comv_x = interp_at_cross(5);
+
+                        if gamma_th3_x > 1.0 && b3_x > 0.0 && t_comv_x > 0.0 && blast.gamma_th3 > 1.0 {
+                            let f_ad = ((blast.gamma_th3 - 1.0) / (gamma_th3_x - 1.0)).clamp(0.0, 1.0);
+                            let gamma_bar_x = 6.0 * std::f64::consts::PI * MASS_E * C_SPEED / (SIGMA_T * b3_x * b3_x * t_comv_x);
+                            let gamma_c_x = (gamma_bar_x + (gamma_bar_x * gamma_bar_x + 4.0).sqrt()) / 2.0;
+                            blast.gamma_c_override = (gamma_c_x - 1.0) * f_ad + 1.0;
+                            let gamma_m_x = (6.0 * std::f64::consts::PI * E_CHARGE / (SIGMA_T * b3_x)).sqrt();
+                            blast.gamma_M_override = (gamma_m_x - 1.0) * f_ad + 1.0;
+                        }
+                    }
+
+                    // RS thermodynamic quantities
+                    blast.gamma_th = blast.gamma_th3;
+                    blast.n_blast = blast.n3;
+                    if blast.gamma_th3 > 1.0 {
+                        blast.e_density = (blast.gamma_th3 - 1.0) * blast.n3 * MASS_P * C_SPEED * C_SPEED;
+                    } else {
+                        blast.e_density = 0.0;
+                    }
+                    let m3 = rs_data[2][j][k];
+                    if blast.n3 > 0.0 && blast.r > 0.0 {
+                        blast.dr = m3 / (blast.r * blast.r * blast.n3 * MASS_P);
+                    } else {
+                        blast.dr = 0.0;
+                    }
+
+                    let nu_src = nu_z / blast.doppler;
+                    let intensity = radiation_model(nu_src, param_rs, &blast);
+                    cell_dl.push(
+                        intensity
+                            * blast.r * blast.r
+                            * blast.doppler * blast.doppler * blast.doppler,
+                    );
+                }
+
+                // cell_tobs and cell_dl may differ in length if r <= 0 was skipped
+                // Truncate cell_tobs to match cell_dl
+                let n_valid = cell_dl.len();
+                cell_tobs.truncate(n_valid);
+
+                let lg2_t = to_lg2(&cell_tobs);
+                let lg2_dl = to_lg2(&cell_dl);
+
+                let t_min = *lg2_t.first().unwrap_or(&f64::NEG_INFINITY);
+                let t_max = *lg2_t.last().unwrap_or(&f64::NEG_INFINITY);
+                let domega_val = all_dcos[j] * dphis[phi_idx];
+
+                (lg2_t, lg2_dl, domega_val, t_min, t_max)
+            })
+            .collect();
+
+        let mut lg2_t_obs = Vec::with_capacity(cells.len());
+        let mut lg2_dl_domega = Vec::with_capacity(cells.len());
+        let mut domega = Vec::with_capacity(cells.len());
+        let mut lg2_t_min = Vec::with_capacity(cells.len());
+        let mut lg2_t_max = Vec::with_capacity(cells.len());
+        for (t, dl, d, tmin, tmax) in cells {
+            if t.is_empty() { continue; }
             lg2_t_obs.push(t);
             lg2_dl_domega.push(dl);
             domega.push(d);
