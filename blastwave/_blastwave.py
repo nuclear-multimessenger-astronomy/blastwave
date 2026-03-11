@@ -43,6 +43,10 @@ class Jet:
         magnetar_t0=None,      # [s] spin-down timescale (scalar or list)
         magnetar_q=None,       # power-law decay index (scalar or list)
         magnetar_ts=None,      # [s] injection start time (scalar or list; 0 = from beginning)
+        trailing_shells=None,  # list of (E_iso, Gamma0, t_launch[, theta_max[, duration]]) tuples
+        eps_e_coll=0.1,       # [collision shock electron energy fraction]
+        eps_b_coll=0.01,      # [collision shock magnetic energy fraction]
+        p_coll=2.3,           # [collision shock electron spectral index]
     ):
         # save
         theta, energy, lf = profiles
@@ -86,6 +90,24 @@ class Jet:
         self.magnetar_t0 = _to_list(magnetar_t0, [1.0] * n_ep)
         self.magnetar_q = _to_list(magnetar_q, [2.0] * n_ep)
         self.magnetar_ts = _to_list(magnetar_ts, [0.0] * n_ep)
+        # Parse trailing shells: list of (E_iso, Gamma0, t_launch[, theta_max]) tuples
+        self._shell_e_iso = []
+        self._shell_gamma0 = []
+        self._shell_t_launch = []
+        self._shell_theta_max = []
+        self._shell_duration = []
+        if trailing_shells:
+            for s in trailing_shells:
+                self._shell_e_iso.append(float(s[0]))
+                self._shell_gamma0.append(float(s[1]))
+                self._shell_t_launch.append(float(s[2]) if len(s) > 2 else 0.0)
+                self._shell_theta_max.append(float(s[3]) if len(s) > 3 else 0.0)
+                self._shell_duration.append(float(s[4]) if len(s) > 4 else 0.0)
+
+        # Collision shock microphysics
+        self.eps_e_coll = eps_e_coll
+        self.eps_b_coll = eps_b_coll
+        self.p_coll = p_coll
 
         # solve jet
         jet_config = self._configJet()
@@ -345,6 +367,14 @@ class Jet:
         jet_config.magnetar_t0 = self.magnetar_t0
         jet_config.magnetar_q = self.magnetar_q
         jet_config.magnetar_ts = self.magnetar_ts
+        jet_config.shell_e_iso = self._shell_e_iso
+        jet_config.shell_gamma0 = self._shell_gamma0
+        jet_config.shell_t_launch = self._shell_t_launch
+        jet_config.shell_theta_max = self._shell_theta_max
+        jet_config.shell_duration = self._shell_duration
+        jet_config.eps_e_coll = self.eps_e_coll
+        jet_config.eps_b_coll = self.eps_b_coll
+        jet_config.p_coll = self.p_coll
 
         # generate grid
         theta_edge = self.grid

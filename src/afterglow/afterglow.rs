@@ -10,7 +10,8 @@ use crate::afterglow::models::{Dict, RadiationModel};
 /// Afterglow flux density pipeline.
 pub struct Afterglow {
     pub param: Dict,
-    pub param_rs: Dict,  // RS-specific parameters (eps_e_rs, eps_b_rs, p_rs)
+    pub param_rs: Dict,   // RS-specific parameters (eps_e_rs, eps_b_rs, p_rs)
+    pub param_coll: Dict, // Collision shock parameters (eps_e_coll, eps_b_coll, p_coll)
     pub theta_v: f64,
     pub z: f64,
     pub d: f64,
@@ -23,6 +24,7 @@ impl Afterglow {
         Afterglow {
             param: Dict::new(),
             param_rs: Dict::new(),
+            param_coll: Dict::new(),
             theta_v: 0.0,
             z: 0.0,
             d: 0.0,

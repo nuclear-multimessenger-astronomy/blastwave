@@ -9,6 +9,37 @@ pub enum SpreadMode {
     Pde,
 }
 
+/// A trailing relativistic shell that may collide with the leading blast wave.
+///
+/// The shell coasts ballistically at constant Lorentz factor until it catches
+/// the decelerating forward shock. At collision, energy and momentum are
+/// deposited instantaneously into the blast wave (refreshed shock).
+///
+/// Reference: Sari & Meszaros (2000), Akl et al. (2026, arXiv:2603.08555).
+#[derive(Clone, Debug)]
+pub struct TrailingShell {
+    pub e_iso: f64,       // isotropic-equivalent kinetic energy [erg]
+    pub gamma0: f64,      // initial bulk Lorentz factor
+    pub t_launch: f64,    // lab-frame launch time [s] (0 = simultaneous with leading shell)
+    pub theta_max: f64,   // maximum half-opening angle [rad] (0 = same as leading jet theta_c)
+    pub duration: f64,    // engine duration for this shell [s] (0 = instantaneous injection)
+}
+
+/// A recorded collision event between a trailing shell and the blast wave.
+/// Stores all the shock jump conditions needed for emission computation.
+#[derive(Clone, Debug)]
+pub struct CollisionEvent {
+    pub t_lab: f64,          // lab-frame time of collision [s]
+    pub r_coll: f64,         // collision radius [cm]
+    pub gamma_merged: f64,   // post-collision bulk Lorentz factor
+    pub gamma_rel: f64,      // relative Lorentz factor between shell and blast
+    pub e_th_per_sr: f64,    // thermal energy deposited per steradian [erg/sr]
+    pub m_sh_per_sr: f64,    // shell mass per steradian [g/sr]
+    pub n_sh_comv: f64,      // comoving number density of shocked shell [cm^-3]
+    pub cell_theta: f64,     // angular position of the cell [rad]
+    pub cell_idx: usize,     // theta cell index
+}
+
 /// Simulation configuration, matching C++ JetConfig.
 #[derive(Clone)]
 pub struct JetConfig {
@@ -57,6 +88,14 @@ pub struct JetConfig {
     pub magnetar_t0: Vec<f64>,    // spin-down timescale [s]
     pub magnetar_q: Vec<f64>,     // power-law decay index (2 = magnetic dipole)
     pub magnetar_ts: Vec<f64>,    // injection start time [s] (0 = from beginning)
+
+    // Trailing shell collisions (refreshed shocks)
+    pub trailing_shells: Vec<TrailingShell>,
+
+    // Collision shock microphysics (for internal shock emission)
+    pub eps_e_coll: f64,      // electron energy fraction in collision shocks
+    pub eps_b_coll: f64,      // magnetic energy fraction in collision shocks
+    pub p_coll: f64,          // electron spectral index in collision shocks
 }
 
 impl Default for JetConfig {
@@ -95,6 +134,10 @@ impl Default for JetConfig {
             magnetar_t0: Vec::new(),
             magnetar_q: Vec::new(),
             magnetar_ts: Vec::new(),
+            trailing_shells: Vec::new(),
+            eps_e_coll: 0.1,
+            eps_b_coll: 0.01,
+            p_coll: 2.3,
         }
     }
 }

@@ -1,10 +1,61 @@
 use crate::constants::*;
-use crate::hydro::config::{JetConfig, SpreadMode};
+use crate::hydro::config::{JetConfig, SpreadMode, TrailingShell, CollisionEvent};
 use crate::hydro::tools::Tool;
 use crate::hydro::reverse_shock::{self, FRShockEqn, NVAR_RS};
 use rayon::prelude::*;
 
 const C2: f64 = C_SPEED * C_SPEED;
+
+/// Runtime state for a trailing shell during ODE integration.
+/// Pre-computes kinematic quantities to avoid redundant work per step.
+#[derive(Clone)]
+struct TrailingShellState {
+    /// Isotropic-equivalent kinetic energy [erg].
+    e_iso: f64,
+    /// Initial bulk Lorentz factor.
+    gamma0: f64,
+    /// Lab-frame velocity (β = v/c).
+    beta: f64,
+    /// Four-velocity βΓ.
+    bg: f64,
+    /// Lab-frame launch time [s].
+    t_launch: f64,
+    /// Mass per steradian: E_iso / (4π Γ₀ c²).
+    m_per_sr: f64,
+    /// Maximum half-opening angle [rad].
+    theta_max: f64,
+    /// Shell thickness in lab frame [cm] (from engine duration).
+    /// Δ = β·c·duration. If 0, injection is instantaneous.
+    thickness: f64,
+    /// Per-cell: lab time of first contact (NaN = not yet collided).
+    t_collision: Vec<f64>,
+    /// Per-cell: fraction of mass/energy already injected [0, 1].
+    fraction_injected: Vec<f64>,
+}
+
+impl TrailingShellState {
+    fn from_config(shell: &TrailingShell, ntheta: usize, theta_c: f64) -> Self {
+        let gamma0 = shell.gamma0;
+        let bg_sq = gamma0 * gamma0 - 1.0;
+        let bg = bg_sq.sqrt();
+        let beta = bg / gamma0;
+        let m_per_sr = shell.e_iso / (4.0 * PI * gamma0 * C2);
+        let theta_max = if shell.theta_max > 0.0 { shell.theta_max } else { theta_c };
+        let thickness = beta * C_SPEED * shell.duration;
+        TrailingShellState {
+            e_iso: shell.e_iso,
+            gamma0,
+            beta,
+            bg,
+            t_launch: shell.t_launch,
+            m_per_sr,
+            theta_max,
+            thickness,
+            t_collision: vec![f64::NAN; ntheta],
+            fraction_injected: vec![0.0; ntheta],
+        }
+    }
+}
 
 /// PDE solver for jet hydrodynamics.
 pub struct SimBox {
@@ -86,6 +137,12 @@ pub struct SimBox {
     // Forward shock energy injection (magnetar spin-down, multiple episodes)
     // Each element: (l0_per_sr_c2, t0, q, ts)
     magnetar_episodes: Vec<(f64, f64, f64, f64)>,
+
+    // Trailing shell collisions (refreshed shocks)
+    trailing_shells: Vec<TrailingShellState>,
+
+    // Recorded collision events (for internal shock emission)
+    pub collision_events: Vec<CollisionEvent>,
 }
 
 impl SimBox {
@@ -152,6 +209,10 @@ impl SimBox {
                 let ts = config.magnetar_ts.get(i).copied().unwrap_or(0.0);
                 (l0 / (4.0 * PI * C_SPEED * C_SPEED), t0, q, ts)
             }).filter(|&(l0_c2, _, _, _)| l0_c2 > 0.0).collect(),
+            trailing_shells: config.trailing_shells.iter()
+                .map(|s| TrailingShellState::from_config(s, ntheta, config.theta_c))
+                .collect(),
+            collision_events: Vec::new(),
         };
 
         sb.solve_primitive();
@@ -174,6 +235,9 @@ impl SimBox {
     pub fn solve_pde(&mut self) {
         if !self.magnetar_episodes.is_empty() && self.spread_mode == SpreadMode::Pde {
             eprintln!("WARNING: magnetar injection not supported in PDE mode; use spread_mode=\"ode\" or \"none\"");
+        }
+        if !self.trailing_shells.is_empty() && self.spread_mode == SpreadMode::Pde {
+            eprintln!("WARNING: trailing shell collisions not supported in PDE mode; use spread_mode=\"ode\" or \"none\"");
         }
 
         match self.spread_mode {
@@ -719,6 +783,135 @@ impl SimBox {
         }
     }
 
+    /// Check for trailing shell collisions and resolve them in-place.
+    ///
+    /// A trailing shell collides when its ballistic radius R_shell = β·c·(t - t_launch)
+    /// overtakes the blast wave radius R_blast = state[2].
+    ///
+    /// Resolution uses energy-momentum conservation in the lab frame:
+    ///   - Momentum: βΓ_merged · m_total = βΓ_blast · m_blast + βΓ_shell · m_shell
+    ///   - Energy:   Γ_merged · m_total · c² + U_th,new = E_blast + E_shell
+    ///   - Thermal energy increase = kinetic energy dissipated in collision
+    ///
+    /// The shell's mass per steradian is m_shell = E_iso / (4π Γ₀ c²), deposited
+    /// only into cells within the shell's angular extent (θ < θ_max).
+    fn resolve_shell_collisions(
+        shells: &mut [TrailingShellState],
+        state: &mut [f64; 7],
+        t: f64,
+        cell_theta: f64,
+        cell_idx: usize,
+        collision_events: &mut Vec<CollisionEvent>,
+    ) {
+        for shell in shells.iter_mut() {
+            let frac_done = shell.fraction_injected[cell_idx];
+            if frac_done >= 1.0 { continue; }
+            if t < shell.t_launch { continue; }
+            if cell_theta > shell.theta_max { continue; }
+
+            let r_shell_front = shell.beta * C_SPEED * (t - shell.t_launch);
+            let r_blast = state[2];
+
+            if r_shell_front < r_blast { continue; }
+
+            // Pre-collision blast state (needed for event recording)
+            let bg_sq_blast = state[4].max(0.0);
+            let bg_blast = bg_sq_blast.sqrt();
+            let gamma_blast = (1.0 + bg_sq_blast).sqrt();
+
+            // First contact — record collision time and event
+            let is_first_contact = shell.t_collision[cell_idx].is_nan();
+            if is_first_contact {
+                shell.t_collision[cell_idx] = t;
+
+                // Compute relative Lorentz factor: Γ_rel = Γ_shell·Γ_blast·(1 - β_shell·β_blast)
+                let beta_blast_v = bg_blast / gamma_blast;
+                let gamma_rel = shell.gamma0 * gamma_blast * (1.0 - shell.beta * beta_blast_v);
+
+                // Comoving number density of shocked shell material.
+                // Lab-frame shell density: n_lab = m_per_sr / (m_p × R² × ΔR_lab)
+                // Shell rest-frame (upstream) density: n_4 = n_lab / Γ_shell
+                //   (Lorentz expansion: rest-frame volume is Γ× larger than lab)
+                // Post-shock density (region 3): n_3 = 4 × Γ_rel × n_4
+                // Shell lab-frame thickness:
+                // If duration > 0: ΔR = β·c·duration (engine duration sets thickness)
+                // If duration = 0: ΔR = R/Γ (causal thickness of a coasting shell)
+                let delta_r = if shell.thickness > 0.0 {
+                    shell.thickness  // already in lab frame (β·c·duration)
+                } else {
+                    r_blast / shell.gamma0
+                };
+                let n_shell_lab = shell.m_per_sr / (MASS_P * r_blast * r_blast * delta_r.max(1.0));
+                let n_sh_comv = 4.0 * gamma_rel * n_shell_lab / shell.gamma0;
+
+                // Thermal energy deposited in the shell (reverse shock portion)
+                // Total thermal energy: e_th_total = E_kin_rel - E_kin_merged
+                // Split: ~half goes to forward shock (already in u2_th), ~half to reverse shock
+                // For the RS: e_th_rs ≈ (Γ_rel - 1) × m_shell × c²
+                let e_th_rs = (gamma_rel - 1.0) * shell.m_per_sr * C2;
+
+                collision_events.push(CollisionEvent {
+                    t_lab: t,
+                    r_coll: r_blast,
+                    gamma_merged: 0.0,  // will be filled after momentum conservation below
+                    gamma_rel,
+                    e_th_per_sr: e_th_rs,
+                    m_sh_per_sr: shell.m_per_sr,
+                    n_sh_comv,
+                    cell_theta,
+                    cell_idx,
+                });
+            }
+
+            // Compute fraction to inject this step
+            let new_frac = if shell.thickness <= 0.0 {
+                1.0
+            } else {
+                let t_contact = shell.t_collision[cell_idx];
+                let beta_blast_v = bg_blast / gamma_blast;
+                let v_rel = (shell.beta - beta_blast_v).max(1e-10) * C_SPEED;
+                let dt_cross = shell.thickness / v_rel;
+                let x = ((t - t_contact) / dt_cross).clamp(0.0, 1.0);
+                x * x * (3.0 - 2.0 * x)
+            };
+
+            let delta_frac = (new_frac - frac_done).max(0.0);
+            if delta_frac < 1e-15 { continue; }
+
+            // Inject delta_frac of the shell's total mass and energy
+            let msw = state[0];
+            let mej = state[1];
+            let u2_th = state[5];
+
+            let m_blast = msw + mej;
+            let dm_shell = shell.m_per_sr * delta_frac;
+            let m_total = m_blast + dm_shell;
+
+            // Momentum conservation
+            let bg_merged = (bg_blast * m_blast + shell.bg * dm_shell) / m_total;
+            let gamma_merged = (1.0 + bg_merged * bg_merged).sqrt();
+
+            // Energy conservation: thermal energy = total energy in - bulk kinetic out
+            let e_in = gamma_blast * m_blast * C2 + u2_th + shell.gamma0 * dm_shell * C2;
+            let e_bulk_out = gamma_merged * m_total * C2;
+            let u_th_new = (e_in - e_bulk_out).max(u2_th);
+
+            // Update ODE state in-place
+            state[1] += dm_shell;
+            state[4] = bg_merged * bg_merged;
+            state[5] = u_th_new;
+
+            shell.fraction_injected[cell_idx] = new_frac;
+
+            // Fill in gamma_merged for the collision event (if first contact)
+            if is_first_contact {
+                if let Some(ev) = collision_events.last_mut() {
+                    ev.gamma_merged = gamma_merged;
+                }
+            }
+        }
+    }
+
     /// Number of state variables for the ODE spread solver.
     /// State: [msw, mej, r, theta_cell, beta_gamma_sq, u2_th, t_comv]
     const ODE_NVAR: usize = 7;
@@ -989,6 +1182,11 @@ impl SimBox {
             (0..real_ntheta).collect()
         };
 
+        // Temporarily take trailing shells out to avoid borrow conflict with self
+        let mut t_shells = std::mem::take(&mut self.trailing_shells);
+        let has_shells = !t_shells.is_empty();
+        let mut coll_events: Vec<CollisionEvent> = Vec::new();
+
         for &i in &solve_list {
             // For tophat core cells, use theta_c as the representative initial angle.
             // Using theta[0] (the first tiny grid cell) gives a pathologically
@@ -1041,6 +1239,14 @@ impl SimBox {
                     state[4] = state[4].max(0.0);         // clamp bg_sq
                     state[5] = state[5].max(0.0);         // clamp u2_th
 
+                    // Check for trailing shell collisions
+                    if has_shells {
+                        Self::resolve_shell_collisions(
+                            &mut t_shells, &mut state, t, theta0_i, i,
+                            &mut coll_events,
+                        );
+                    }
+
                     while save_idx < nt && output_times[save_idx] <= t + 1e-10 {
                         let bt = self.compute_beta_th_from_state(&state, theta0_i, true);
                         ys[0][i][save_idx] = state[0]; // msw
@@ -1072,6 +1278,10 @@ impl SimBox {
             }
         }
 
+        // Restore trailing shells and store collision events
+        self.trailing_shells = t_shells;
+        self.collision_events.extend(coll_events);
+
         if is_tophat {
             // Replicate core cell 0 solution to all core cells (0..n_core)
             for var in 0..7 {
@@ -1080,6 +1290,28 @@ impl SimBox {
                     ys[var][j] = template.clone();
                 }
             }
+            // Replicate consumed flags for tophat core cells
+            for shell in &mut self.trailing_shells {
+                let tc_0 = shell.t_collision[0];
+                let fi_0 = shell.fraction_injected[0];
+                for j in 1..n_core {
+                    shell.t_collision[j] = tc_0;
+                    shell.fraction_injected[j] = fi_0;
+                }
+            }
+            // Replicate collision events for tophat core cells
+            let n_events = self.collision_events.len();
+            let mut extra_events = Vec::new();
+            for ev in &self.collision_events[self.collision_events.len().saturating_sub(n_events)..] {
+                if ev.cell_idx == 0 {
+                    for j in 1..n_core {
+                        let mut ev_copy = ev.clone();
+                        ev_copy.cell_idx = j;
+                        extra_events.push(ev_copy);
+                    }
+                }
+            }
+            self.collision_events.extend(extra_events);
         }
 
         self.ys = ys;
@@ -1142,6 +1374,11 @@ impl SimBox {
             (0..real_ntheta).collect()
         };
 
+        // Temporarily take trailing shells out to avoid borrow conflict with self
+        let mut t_shells = std::mem::take(&mut self.trailing_shells);
+        let has_shells = !t_shells.is_empty();
+        let mut coll_events: Vec<CollisionEvent> = Vec::new();
+
         for &i in &solve_list {
             let theta0_i = self.theta[i];
 
@@ -1188,6 +1425,14 @@ impl SimBox {
                     state[4] = state[4].max(0.0); // clamp bg_sq
                     state[5] = state[5].max(0.0); // clamp u2_th
 
+                    // Check for trailing shell collisions
+                    if has_shells {
+                        Self::resolve_shell_collisions(
+                            &mut t_shells, &mut state, t, theta0_i, i,
+                            &mut coll_events,
+                        );
+                    }
+
                     while save_idx < nt && output_times[save_idx] <= t + 1e-10 {
                         ys[0][i][save_idx] = state[0]; // msw
                         ys[1][i][save_idx] = state[1]; // mej
@@ -1217,6 +1462,10 @@ impl SimBox {
             }
         }
 
+        // Restore trailing shells and store collision events
+        self.trailing_shells = t_shells;
+        self.collision_events.extend(coll_events);
+
         if is_tophat {
             for var in 0..7 {
                 let template = ys[var][0].clone();
@@ -1224,6 +1473,28 @@ impl SimBox {
                     ys[var][j] = template.clone();
                 }
             }
+            // Replicate consumed flags for tophat core cells
+            for shell in &mut self.trailing_shells {
+                let tc_0 = shell.t_collision[0];
+                let fi_0 = shell.fraction_injected[0];
+                for j in 1..n_core {
+                    shell.t_collision[j] = tc_0;
+                    shell.fraction_injected[j] = fi_0;
+                }
+            }
+            // Replicate collision events for tophat core cells
+            let n_events = self.collision_events.len();
+            let mut extra_events = Vec::new();
+            for ev in &self.collision_events[self.collision_events.len().saturating_sub(n_events)..] {
+                if ev.cell_idx == 0 {
+                    for j in 1..n_core {
+                        let mut ev_copy = ev.clone();
+                        ev_copy.cell_idx = j;
+                        extra_events.push(ev_copy);
+                    }
+                }
+            }
+            self.collision_events.extend(extra_events);
         }
 
         self.ys = ys;

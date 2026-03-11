@@ -148,7 +148,7 @@ fn interpolate_zero_luminosities(results: &mut [f64], t_s: &[f64], nu_s: &[f64])
 }
 
 use blastwave::constants::*;
-use blastwave::hydro::config::{JetConfig, SpreadMode};
+use blastwave::hydro::config::{JetConfig, SpreadMode, TrailingShell, CollisionEvent};
 use blastwave::hydro::sim_box::SimBox;
 use blastwave::hydro::interpolate::Interpolator;
 use blastwave::hydro::tools::Tool;
@@ -157,6 +157,7 @@ use blastwave::afterglow::eats::EATS;
 use blastwave::afterglow::afterglow::Afterglow;
 use blastwave::afterglow::forward_grid::{ForwardGrid, BlastGridCache};
 use blastwave::afterglow::ebl;
+use blastwave::afterglow::collision_emission;
 
 #[pyfunction]
 #[pyo3(name = "ebl_tau")]
@@ -257,6 +258,27 @@ pub struct PyJetConfig {
     pub magnetar_q: Vec<f64>,
     #[pyo3(get, set)]
     pub magnetar_ts: Vec<f64>,
+
+    // Trailing shell collisions (refreshed shocks)
+    // Parallel arrays: each index defines one trailing shell.
+    #[pyo3(get, set)]
+    pub shell_e_iso: Vec<f64>,     // isotropic-equivalent kinetic energy [erg]
+    #[pyo3(get, set)]
+    pub shell_gamma0: Vec<f64>,    // initial bulk Lorentz factor
+    #[pyo3(get, set)]
+    pub shell_t_launch: Vec<f64>,  // lab-frame launch time [s]
+    #[pyo3(get, set)]
+    pub shell_theta_max: Vec<f64>, // maximum half-opening angle [rad] (0 = same as theta_c)
+    #[pyo3(get, set)]
+    pub shell_duration: Vec<f64>,  // engine duration for each shell [s] (0 = instantaneous)
+
+    // Collision shock microphysics (for internal shock emission)
+    #[pyo3(get, set)]
+    pub eps_e_coll: f64,   // electron energy fraction in collision shocks
+    #[pyo3(get, set)]
+    pub eps_b_coll: f64,   // magnetic energy fraction in collision shocks
+    #[pyo3(get, set)]
+    pub p_coll: f64,       // electron spectral index in collision shocks
 }
 
 #[pymethods]
@@ -297,6 +319,14 @@ impl PyJetConfig {
             magnetar_t0: Vec::new(),
             magnetar_q: Vec::new(),
             magnetar_ts: Vec::new(),
+            shell_e_iso: Vec::new(),
+            shell_gamma0: Vec::new(),
+            shell_t_launch: Vec::new(),
+            shell_theta_max: Vec::new(),
+            shell_duration: Vec::new(),
+            eps_e_coll: 0.1,
+            eps_b_coll: 0.01,
+            p_coll: 2.3,
         }
     }
 }
@@ -350,6 +380,16 @@ impl PyJetConfig {
             magnetar_t0: self.magnetar_t0.clone(),
             magnetar_q: self.magnetar_q.clone(),
             magnetar_ts: self.magnetar_ts.clone(),
+            trailing_shells: (0..self.shell_e_iso.len()).map(|i| TrailingShell {
+                e_iso: self.shell_e_iso[i],
+                gamma0: self.shell_gamma0[i],
+                t_launch: self.shell_t_launch.get(i).copied().unwrap_or(0.0),
+                theta_max: self.shell_theta_max.get(i).copied().unwrap_or(0.0),
+                duration: self.shell_duration.get(i).copied().unwrap_or(0.0),
+            }).collect(),
+            eps_e_coll: self.eps_e_coll,
+            eps_b_coll: self.eps_b_coll,
+            p_coll: self.p_coll,
         }
     }
 }
@@ -367,6 +407,7 @@ struct JetInner {
     include_reverse_shock: bool,
     flux_method: String,
     radiation_model_name: String,
+    collision_events: Vec<CollisionEvent>,
 }
 
 // SAFETY: JetInner only contains owned, immutable-after-construction data.
@@ -399,6 +440,7 @@ impl PyJet {
         let ts = sim_box.ts.clone();
         let ys = sim_box.ys.clone();
         let ys_rs = sim_box.ys_rs.clone();
+        let coll_events = sim_box.collision_events.clone();
         let include_rs = self.config.include_reverse_shock;
         let tool = Tool::new(
             self.config.nwind,
@@ -423,6 +465,7 @@ impl PyJet {
             include_reverse_shock: include_rs,
             flux_method: String::new(),
             radiation_model_name: String::new(),
+            collision_events: coll_events,
         });
         Ok(())
     }
@@ -524,11 +567,22 @@ impl PyJet {
             param_rs.insert("eps_e".to_string(), self.config.eps_e_rs);
             param_rs.insert("eps_b".to_string(), self.config.eps_b_rs);
             param_rs.insert("p".to_string(), self.config.p_rs);
-            // Copy shared parameters from FS params
             param_rs.insert("theta_v".to_string(), inner.afterglow.theta_v);
             param_rs.insert("d".to_string(), inner.afterglow.d);
             param_rs.insert("z".to_string(), inner.afterglow.z);
             inner.afterglow.config_rs_parameters(param_rs);
+        }
+
+        // Auto-configure collision shock parameters if collision events exist
+        if !inner.collision_events.is_empty() {
+            let mut param_coll = HashMap::new();
+            param_coll.insert("eps_e".to_string(), self.config.eps_e_coll);
+            param_coll.insert("eps_b".to_string(), self.config.eps_b_coll);
+            param_coll.insert("p".to_string(), self.config.p_coll);
+            param_coll.insert("theta_v".to_string(), inner.afterglow.theta_v);
+            param_coll.insert("d".to_string(), inner.afterglow.d);
+            param_coll.insert("z".to_string(), inner.afterglow.z);
+            inner.afterglow.param_coll = param_coll;
         }
         Ok(())
     }
@@ -730,6 +784,22 @@ impl PyJet {
                             }
                         }
 
+                        // Add collision emission if events exist
+                        if !inner.collision_events.is_empty() {
+                            let coll_grid = collision_emission::precompute_collision_grid(
+                                nu_z, theta_v, &inner.ys,
+                                &inner.ts, &inner.theta,
+                                &inner.eats, &inner.tool,
+                                &inner.afterglow.param_coll,
+                                radiation_model,
+                                &inner.collision_events,
+                            );
+                            let sorted_coll = coll_grid.luminosity_batch(&sorted_tobs);
+                            for (si, &orig_idx) in sort_idx.iter().enumerate() {
+                                results[orig_idx] += sorted_coll[si];
+                            }
+                        }
+
                         results
                     } else {
                         // Multi-frequency: precompute blast states once,
@@ -836,6 +906,24 @@ impl PyJet {
                                     if sorted_tobs[si] <= rs_cutoff {
                                         results[orig_idx] += rs_results[si];
                                     }
+                                }
+                            }
+
+                            // Add collision emission
+                            if !inner.collision_events.is_empty() {
+                                let nu = f64::from_bits(bits);
+                                let nu_z = nu * (1.0 + z);
+                                let coll_grid = collision_emission::precompute_collision_grid(
+                                    nu_z, theta_v, &inner.ys,
+                                    &inner.ts, &inner.theta,
+                                    &inner.eats, &inner.tool,
+                                    &inner.afterglow.param_coll,
+                                    radiation_model,
+                                    &inner.collision_events,
+                                );
+                                let coll_results = coll_grid.luminosity_batch(&sorted_tobs);
+                                for (si, &orig_idx) in sorted_indices.iter().enumerate() {
+                                    results[orig_idx] += coll_results[si];
                                 }
                             }
                         }

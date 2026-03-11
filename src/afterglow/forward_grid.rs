@@ -118,7 +118,7 @@ fn adaptive_time_indices(nt: usize, y_data: &[Vec<Vec<f64>>], j: usize, t_data: 
 }
 
 /// Compute cell boundaries and dcos_theta weights for the theta grid.
-fn compute_dcos_theta(theta_data: &[f64]) -> Vec<f64> {
+pub fn compute_dcos_theta(theta_data: &[f64]) -> Vec<f64> {
     let ntheta = theta_data.len();
     let mut boundaries = vec![0.0; ntheta + 1];
     boundaries[0] = 0.0;
@@ -132,7 +132,7 @@ fn compute_dcos_theta(theta_data: &[f64]) -> Vec<f64> {
 }
 
 /// Compute the beta_gamma_sq threshold for skipping negligible cells.
-fn compute_bg_threshold(y_data: &[Vec<Vec<f64>>], ntheta: usize) -> f64 {
+pub fn compute_bg_threshold(y_data: &[Vec<Vec<f64>>], ntheta: usize) -> f64 {
     let max_bg_sq = (0..ntheta)
         .flat_map(|j| y_data[2][j].iter().copied())
         .fold(0.0f64, f64::max);
@@ -200,7 +200,7 @@ fn detect_theta_groups(y_data: &[Vec<Vec<f64>>], ntheta: usize, bg_threshold: f6
 ///
 /// Uses D³(phi) weight from the most-beamed theta cell to build a CDF,
 /// then inverts it to place cells at equal-weight intervals.
-fn build_phi_grid(theta_v: f64, theta_data: &[f64], y_data: &[Vec<Vec<f64>>]) -> (Vec<f64>, Vec<f64>) {
+pub fn build_phi_grid(theta_v: f64, theta_data: &[f64], y_data: &[Vec<Vec<f64>>]) -> (Vec<f64>, Vec<f64>) {
     if theta_v.abs() < 1e-6 {
         // On-axis: azimuthal symmetry, single cell at phi=0
         return (vec![0.0], vec![2.0 * PI]);
@@ -950,6 +950,34 @@ impl ForwardGrid {
             lg2_t_max.push(tmax);
         }
 
+        ForwardGrid {
+            lg2_t_obs,
+            lg2_dl_domega,
+            domega,
+            lg2_t_min,
+            lg2_t_max,
+        }
+    }
+
+    /// Create an empty ForwardGrid (no emission).
+    pub fn empty() -> Self {
+        ForwardGrid {
+            lg2_t_obs: Vec::new(),
+            lg2_dl_domega: Vec::new(),
+            domega: Vec::new(),
+            lg2_t_min: Vec::new(),
+            lg2_t_max: Vec::new(),
+        }
+    }
+
+    /// Create a ForwardGrid from pre-computed parts.
+    pub fn from_parts(
+        lg2_t_obs: Vec<Vec<f64>>,
+        lg2_dl_domega: Vec<Vec<f64>>,
+        domega: Vec<f64>,
+        lg2_t_min: Vec<f64>,
+        lg2_t_max: Vec<f64>,
+    ) -> Self {
         ForwardGrid {
             lg2_t_obs,
             lg2_dl_domega,

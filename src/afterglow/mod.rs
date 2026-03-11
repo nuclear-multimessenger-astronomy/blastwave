@@ -9,3 +9,4 @@ pub mod thermal;
 pub mod ebl;
 pub mod chang_cooper;
 pub mod pairs;
+pub mod collision_emission;
