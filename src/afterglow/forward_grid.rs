@@ -132,11 +132,17 @@ pub fn compute_dcos_theta(theta_data: &[f64]) -> Vec<f64> {
 }
 
 /// Compute the beta_gamma_sq threshold for skipping negligible cells.
+///
+/// The threshold must be conservative enough to retain cells with
+/// non-negligible dL/dΩ contribution. For narrow jets with high Lorentz
+/// factors (Γ~400), max_bg_sq ~ Γ² ~ 160,000 and a 1e-6 factor would
+/// drop cells with β_γ < 0.4, causing ~100× underestimation of the total
+/// luminosity. Use 1e-12 so only truly negligible cells are skipped.
 pub fn compute_bg_threshold(y_data: &[Vec<Vec<f64>>], ntheta: usize) -> f64 {
     let max_bg_sq = (0..ntheta)
         .flat_map(|j| y_data[2][j].iter().copied())
         .fold(0.0f64, f64::max);
-    max_bg_sq * 1e-6
+    max_bg_sq * 1e-12
 }
 
 /// Detect theta cells with identical hydro profiles.
